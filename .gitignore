@@ -19,6 +19,7 @@ ENV/
 # Data files (not published)
 # =============================================================================
 Data/
+data/
 
 # =============================================================================
 # Other development files (not part of the published implementation)
@@ -49,3 +50,10 @@ Thumbs.db
 # Jupyter notebooks checkpoints
 # =============================================================================
 .ipynb_checkpoints/
+
+# =============================================================================
+# Phase folders: keep the results of each phase, ignore the scan logs
+# =============================================================================
+logs_scan/
+phase*/logs/
+!phase*/results/*iter_batch*/
