@@ -1,0 +1,46 @@
+# Example run configuration. Every key is optional: a missing key keeps the
+# default from config.py. Usage: python main.py --config example.toml
+
+[data]
+sig_path = "../Data/train_sig.csv"   # signal CSV; must exist
+bkg_path = "../Data/train_bkg.csv"   # background CSV; must exist
+# max_events = 1000                  # omit = use all events
+balance_classes = false              # equal S and B counts; needs max_events
+event_order = "random"               # "random", "signal_first" or "background_first"
+reshuffle_between_passes = false     # needs event_order = "random"
+run_tag = ""                         # prefix for the output folder name
+
+[model.circuit]
+circuits_file = "circuits_library_Qiskit.py"
+circuit_number = 1                   # circuit template (1-19)
+n_layers = 1                         # variational block repetitions (>= 1)
+
+[model.training]
+n_iter = 10                          # full passes over all events (epochs)
+batch_size = 0.1                     # int = events per batch (32); float = fraction of events (0.1)
+
+[model.adam]
+alpha = 5e-3                         # learning rate
+beta1 = 0.9
+beta2 = 0.999
+epsilon = 1e-8
+
+[model.checkpoints]
+# When to record the loss: integers in [1, n_iter], "start" or "end".
+global_checkpoints = ["start", "end"]
+batch_checkpoints = ["start", "end"]
+# global_step = 5                    # auto-fill checkpoints every N passes; omit = off
+# batch_step = 5
+
+[model.backend]
+use_statevector = false              # true = exact P(|1>), no shot noise
+nm = 1000                            # shots per circuit evaluation
+simulator_method = "automatic"       # "automatic", "statevector", "matrix_product_state", "density_matrix"
+# ibm_backend = "ibm_brisbane"       # omit = local AerSimulator; token from IBM_TOKEN env var
+
+[seeds]
+# Omit a seed to draw it at random; the value used is recorded in results.json.
+# data_shuffle = 123
+# theta_init = 456
+# pass_reshuffle = 789
+# simulator = 42

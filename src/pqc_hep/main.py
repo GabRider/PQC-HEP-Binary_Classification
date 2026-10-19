@@ -9,22 +9,13 @@ Affiliation: Student at Instituto Superior Técnico, Universidade de Lisboa
 Circuit templates and numbering follow Figure 2 of Sim et al. (2019) — see references in README.md.
 
 Usage:
-    python PQC_HEP_training_file_Qiskit.py
-    python PQC_HEP_training_file_Qiskit.py --circuit-number 5 --n-layers 2 --batch-size 50
+    python main.py                       # built-in defaults (see config.py)
+    python main.py --config run.toml     # values from a TOML file
 
-    All arguments are optional; defaults come from USER SETTINGS below.
-    Command-line arguments always override USER SETTINGS values.
-
-Arguments (all optional):
-    --circuits-file  : path to the circuits library Python file
-    --circuit-number : integer 1-19, circuit label from the source paper
-    --n-layers       : integer >= 1, number of repeating layer applications
-    --n-iter         : integer >= 1, number of full passes over all events
-    --batch-size     : events per mini-batch (must evenly divide total events used)
-    --data-folder    : folder containing signal and background CSV files
-    --sig            : signal filename (relative to --data-folder) or full path
-    --bkg            : background filename (relative to --data-folder) or full path
-    --max-events     : maximum total events to use
+    The TOML file only needs the keys that differ from the defaults; see
+    example.toml for every available key. Missing seeds are drawn at random
+    and recorded in results.json. The IBM token is read from the IBM_TOKEN
+    environment variable.
 
     Data file format (CSV, one event per line):
         col 0-11 : 12 floating-point feature values
@@ -33,7 +24,7 @@ Arguments (all optional):
 
 Training pipeline (mini-batch mode):
     All circuits (embedding + variational form) are pre-built and transpiled once before
-    training. Events are divided into batches of BATCH_SIZE. One complete sweep
+    training. Events are divided into batches of training.batch_size. One complete sweep
     through all batches constitutes one N_iter pass (epoch).
 
     Per batch:
@@ -89,305 +80,64 @@ from qiskit.circuit import ParameterVector
 from qiskit.circuit.library import StatePreparation
 from qiskit.quantum_info import Statevector
 from qiskit_aer import AerSimulator
-# Note: qiskit_ibm_runtime is NOT imported here unconditionally. If IBM_BACKEND
-# is set in USER SETTINGS, the code will attempt to import QiskitRuntimeService
+
+from pqc_hep.config import load as load_config
+
+# Note: qiskit_ibm_runtime is NOT imported here unconditionally. If model.backend.ibm_backend
+# is set in the config, the code will attempt to import QiskitRuntimeService
 # from qiskit_ibm_runtime at runtime (inside the QUANTUM PIPELINE section).
-# If qiskit_ibm_runtime is not installed and IBM_BACKEND is set, the code exits
-# with a clear installation instruction. If IBM_BACKEND=None (default), the
+# If qiskit_ibm_runtime is not installed and model.backend.ibm_backend is set, the code exits
+# with a clear installation instruction. If model.backend.ibm_backend is unset (default), the
 # import is never attempted and qiskit_ibm_runtime does not need to be installed.
 
 
 # =============================================================================
-# USER SETTINGS
-# All adjustable parameters are collected here. Nothing else in this file
-# should need to be changed between runs.
-# =============================================================================
-
-# Problem dimensions (tied to the data format and circuit library).
+# CONSTANTS
+# Problem dimensions, tied to the data format and the circuit library.
 # Fixed by the physics setup; do not change without matching data and circuits.
+# =============================================================================
 N_QUBITS = 4
 N_FEAT   = 12
 N_DIM    = 2**N_QUBITS    # Hilbert-space dimension
 
-# Circuits and data.
-# Selects the variational form circuit and specifies where to find the data files.
-CIRCUITS_FILE   = "circuits_library_Qiskit.py"  # path to the circuits library Python file
-CIRCUIT_NUMBER  = 1                              # circuit template to use (integer 1-19)
-N_LAYERS        = 1                              # number of variational block repetitions (>= 1)
-DATA_FOLDER     = "../Data"                      # folder containing the CSV files; None = current directory
-SIG_FILE        = "train_sig.csv"               # signal CSV filename (relative to DATA_FOLDER)
-BKG_FILE        = "train_bkg.csv"              # background CSV filename (relative to DATA_FOLDER)
-MAX_EVENTS      = None                          # total events to use; None = use all events
-BALANCE_CLASSES = False                          # if True, use equal S and B counts; requires MAX_EVENTS != None
-
-# Event ordering.
-# Controls the order and randomisation of training events.
-# "random"           : signal and background events interleaved randomly (recommended)
-# "signal_first"     : all signal events first, then all background
-# "background_first" : all background events first, then all signal
-EVENT_ORDER       = "random"
-DATA_SHUFFLE_SEED = None     # seed for the initial event shuffle; None = random
-
-# Between-pass reshuffling.
-# If True, the event order is re-randomised at the start of each pass after pass 1.
-# Requires EVENT_ORDER="random" (incompatible otherwise; caught at startup).
-# Pass n uses seed (PASS_RESHUFFLE_SEED + n), giving reproducible but distinct
-# shuffles each pass. If PASS_RESHUFFLE_SEED=None, each pass gets a fully
-# random seed — runs will not be reproducible even with other seeds fixed.
-RESHUFFLE_BETWEEN_PASSES = False
-PASS_RESHUFFLE_SEED      = None   # base seed for between-pass reshuffles; None = random
-
-# Training hyperparameters.
-# Controls the training loop structure (epochs, batch size) and the Adam
-# optimiser step (learning rate and moment decay coefficients).
-N_ITER = 10    # number of full passes over all training events (epochs)
-
-# Batch size.
-# BATCH_SIZE_IS_FRACTION controls how BATCH_SIZE is interpreted:
-#   False : BATCH_SIZE is the exact number of events per mini-batch (integer >= 1).
-#           BATCH_SIZE = 1 means one event per gradient update (very noisy).
-#   True  : BATCH_SIZE is a fraction of the total events used, in (0, 1].
-#           BATCH_SIZE = 1.0 means the entire dataset in one batch (full batch GD).
-#           The resolved event count must evenly divide the total number of events.
-BATCH_SIZE_IS_FRACTION = True   # False = exact count, True = fraction of total events
-BATCH_SIZE             = 0.1   # exact events per batch (int >= 1) or fraction (float in (0, 1])
-
-# Adam optimizer — sklearn AdamOptimizer, standard constant-beta EMA formulation.
-# Uses constant beta_1/beta_2 as EMA decay coefficients.
-ALPHA   = 5e-3    # learning rate
-BETA1   = 0.9     # first-moment EMA decay coefficient (standard default)
-BETA2   = 0.999   # second-moment EMA decay coefficient (standard default)
-EPSILON = 1e-8    # numerical stability constant
-THETA_INIT_SEED = None      # seed for the initial theta values; None = random
-
-# Evaluation checkpoints.
-# Specifies when to pause training and record the loss (during and after).
-#
-# Both lists accept any combination of:
-#   integers in [1, N_ITER] : evaluate at the end of that N_iter pass
-#   "start"                 : evaluate before any training (initial random theta)
-#   "end"                   : equivalent to N_ITER (the last pass)
-#
-# Only N_iter-boundary values are valid for integers (no mid-pass snapshots).
-# "start" is the only exception — it is not at an N_iter boundary.
-#
-# GLOBAL_EVAL_CHECKPOINTS
-#   Computes the loss over ALL training events with the current theta.
-#   Requires one forward-pass circuit run per event each time it triggers.
-#   "start" uses the initial random theta over all events.
-#
-# BATCH_EVAL_CHECKPOINTS
-#   Records the pre-step loss from the LAST BATCH of the specified N_iter pass.
-#   No extra circuit runs needed — reuses the forward pass already done inside
-#   the gradient calculation for that batch.
-#   "start" records the first batch loss before any Adam step has been taken.
-GLOBAL_EVAL_CHECKPOINTS = ["start", "end"]
-BATCH_EVAL_CHECKPOINTS  = ["start", "end"]
-
-# Automatic step fill for evaluation checkpoints.
-# When set to an integer >= 1, automatically fills in checkpoints at regular
-# intervals between the smallest and largest integer values already in the
-# respective list. Example: list = [10, 50] with GLOBAL_EVAL_STEP = 10 →
-# auto-adds {20, 30, 40}, giving final set {10, 20, 30, 40, 50}.
-# The fill uses the step starting from the list's minimum upward; the first
-# value that would exceed the list's maximum is not added.
-# Set to None to disable automatic filling.
-GLOBAL_EVAL_STEP = None   # integer >= 1, or None to disable
-BATCH_EVAL_STEP  = None   # integer >= 1, or None to disable
-
-# Simulation mode.
-# Selects between exact statevector computation (no shot noise, deterministic)
-# and shot-based measurement simulation (realistic for real quantum hardware).
-# True  : exact P(|1>) from statevector — no shot noise, deterministic, fast.
-# False : estimate P(|1>) from Nm measurement shots — realistic for real hardware (default).
-USE_STATEVECTOR   = False
-Nm                = 1000     # shots per circuit evaluation (ignored when USE_STATEVECTOR=True)
-SIM_SEED          = None       # AerSimulator RNG seed (int >= 0) or None for a random seed
-# Local simulation method (only used when IBM_BACKEND=None and USE_STATEVECTOR=False).
-# "automatic"            : auto-select based on circuit (recommended; original behaviour).
-# "statevector"          : exact internal state, then samples Nm shots (has shot noise).
-#                          Different from USE_STATEVECTOR=True, which skips shot sampling.
-# "matrix_product_state" : efficient for circuits with limited entanglement.
-# "density_matrix"       : for open quantum systems with noise models.
-SIMULATOR_METHOD  = "automatic"
-
-# Real IBM Quantum hardware selection.
-# Set IBM_BACKEND to an IBM QPU name to run on real hardware instead of local simulation.
-#   None       : use the local AerSimulator (all settings above apply normally).
-#   "ibm_..."  : real IBM QPU name, e.g. "ibm_brisbane", "ibm_kyoto" (requires account).
-# Requires: pip install qiskit-ibm-runtime  and a valid IBM Quantum account.
-# Set IBM_TOKEN to your API token, or None if credentials are saved in your environment.
-# When IBM_BACKEND is set: USE_STATEVECTOR, SIMULATOR_METHOD, and SIM_SEED are ignored
-# (real hardware always uses native shot-based execution).
-IBM_BACKEND = None   # None = local AerSimulator; string = IBM QPU name for real hardware
-IBM_TOKEN   = None   # IBM Quantum API token, or None if saved in the environment
-
-# Timing.
-SHOW_ELAPSED_TIME = True
-
-# Output label.
-# Optional text string prepended to the output folder name to help identify runs.
-# None  : folder name is auto-generated as:
-#         circuit{N}_layers{L}_{iter}iter_batch{batch}_{timestamp}
-# string: folder name becomes {RUN_TAG}_circuit{N}_layers{L}_{iter}iter_batch{batch}_{timestamp}
-RUN_TAG = None
-
-# =============================================================================
-# END OF USER SETTINGS
-# =============================================================================
-# SHOW_ELAPSED_TIME is validated here immediately so the timer can be started
-# safely before the main validation block runs.
-if not isinstance(SHOW_ELAPSED_TIME, bool):
-    print("Error: SHOW_ELAPSED_TIME must be True or False.")
-    sys.exit(1)
-if SHOW_ELAPSED_TIME:
-    _t_start = time.time()
+_t_start = time.time()
 
 
 # =============================================================================
 # INPUT HANDLING
 # =============================================================================
-# Parses command-line arguments, validates all USER SETTINGS, resolves data
-# file paths, loads the circuits library, and prepares evaluation checkpoints.
+# Loads the TOML run configuration, resolves data file paths, loads the
+# circuits library, and prepares evaluation checkpoints.
 
 parser = argparse.ArgumentParser(
-    description="PQC mini-batch training pipeline for HEP binary classification (Qiskit). "
-                "All arguments are optional; defaults come from USER SETTINGS."
+    description="PQC mini-batch training pipeline for HEP binary classification (Qiskit)."
 )
-parser.add_argument("--circuits-file",  type=str, default=None, dest="circuits_file")
-parser.add_argument("--circuit-number", type=int, default=None, dest="circuit_number")
-parser.add_argument("--n-layers",       type=int, default=None, dest="n_layers")
-parser.add_argument("--n-iter",         type=int, default=None, dest="n_iter")
-parser.add_argument("--batch-size",     type=int, default=None, dest="batch_size")
-parser.add_argument("--data-folder",    type=str, default=None, dest="data_folder")
-parser.add_argument("--sig",            type=str, default=None, dest="sig_input")
-parser.add_argument("--bkg",            type=str, default=None, dest="bkg_input")
-parser.add_argument("--max-events",     type=int, default=None, dest="max_events")
+parser.add_argument("--config", type=str, default=None,
+                    help="TOML configuration file; built-in defaults are used when omitted.")
 args = parser.parse_args()
 
-# Command-line arguments override USER SETTINGS; None means "use USER SETTINGS".
-circuits_file  = args.circuits_file  if args.circuits_file  is not None else CIRCUITS_FILE
-circuit_number = args.circuit_number if args.circuit_number is not None else CIRCUIT_NUMBER
-n_layers       = args.n_layers       if args.n_layers       is not None else N_LAYERS
-n_iter         = args.n_iter         if args.n_iter         is not None else N_ITER
-_batch_from_cli = args.batch_size is not None
-batch_size      = args.batch_size if _batch_from_cli else BATCH_SIZE
-# When --batch-size is given on the command line, it is always an exact count;
-# BATCH_SIZE_IS_FRACTION is ignored (CLI only accepts integers).
-batch_size_is_fraction = (not _batch_from_cli) and BATCH_SIZE_IS_FRACTION
-if _batch_from_cli and BATCH_SIZE_IS_FRACTION:
-    print("Warning: --batch-size overrides BATCH_SIZE_IS_FRACTION=True. "
-          "The CLI batch size is treated as an exact integer count.")
-max_events     = args.max_events     if args.max_events     is not None else MAX_EVENTS
+try:
+    cfg = load_config(args.config)
+except (OSError, TypeError, ValueError) as e:
+    print(f"Error: {e}")
+    sys.exit(1)
 
-effective_data_folder = args.data_folder if args.data_folder is not None else DATA_FOLDER
-effective_sig         = args.sig_input   if args.sig_input   is not None else SIG_FILE
-effective_bkg         = args.bkg_input   if args.bkg_input   is not None else BKG_FILE
+circuits_file  = cfg.model.circuit.circuits_file
+circuit_number = cfg.model.circuit.circuit_number
+n_layers       = cfg.model.circuit.n_layers
+n_iter         = cfg.model.training.n_iter
+max_events     = cfg.data.max_events
+batch_size_is_fraction = isinstance(cfg.model.training.batch_size, float)
+batch_size     = cfg.model.training.batch_size   # resolved to an event count after data loading
 
-if effective_data_folder is not None:
-    signal_file      = os.path.join(effective_data_folder, effective_sig)
-    background_file  = os.path.join(effective_data_folder, effective_bkg)
-    data_folder_name = os.path.basename(effective_data_folder.rstrip("/\\")) or effective_data_folder
-else:
-    signal_file      = effective_sig
-    background_file  = effective_bkg
-    data_folder_name = None
-
-sig_name_only      = os.path.basename(signal_file)
-bkg_name_only      = os.path.basename(background_file)
+signal_file     = str(cfg.data.sig_path)
+background_file = str(cfg.data.bkg_path)
 circuits_name_only = os.path.basename(circuits_file)
 
-# Validate scalar settings.
-if not isinstance(USE_STATEVECTOR, bool):
-    print("Error: USE_STATEVECTOR must be True or False.")
-    sys.exit(1)
-if DATA_SHUFFLE_SEED is not None and not isinstance(DATA_SHUFFLE_SEED, int):
-    print("Error: DATA_SHUFFLE_SEED must be an integer or None.")
-    sys.exit(1)
-if THETA_INIT_SEED is not None and not isinstance(THETA_INIT_SEED, int):
-    print("Error: THETA_INIT_SEED must be an integer or None.")
-    sys.exit(1)
-if not isinstance(RESHUFFLE_BETWEEN_PASSES, bool):
-    print("Error: RESHUFFLE_BETWEEN_PASSES must be True or False.")
-    sys.exit(1)
-if PASS_RESHUFFLE_SEED is not None and not isinstance(PASS_RESHUFFLE_SEED, int):
-    print("Error: PASS_RESHUFFLE_SEED must be an integer or None.")
-    sys.exit(1)
-if EVENT_ORDER not in ("random", "signal_first", "background_first"):
-    print("Error: EVENT_ORDER must be 'random', 'signal_first', or 'background_first'.")
-    sys.exit(1)
-if RESHUFFLE_BETWEEN_PASSES and EVENT_ORDER != "random":
-    print(f"Error: RESHUFFLE_BETWEEN_PASSES=True conflicts with EVENT_ORDER='{EVENT_ORDER}'. "
-          f"Reshuffling applies a fully random permutation that overrides EVENT_ORDER "
-          f"from pass 2 onwards. Set EVENT_ORDER='random', or set RESHUFFLE_BETWEEN_PASSES=False.")
-    sys.exit(1)
-if not isinstance(BALANCE_CLASSES, bool):
-    print("Error: BALANCE_CLASSES must be True or False.")
-    sys.exit(1)
-if BALANCE_CLASSES and max_events is None:
-    print("Warning: BALANCE_CLASSES=True has no effect when MAX_EVENTS=None "
-          "(all events are used regardless). Set MAX_EVENTS to the desired total "
+if cfg.data.balance_classes and max_events is None:
+    print("Warning: balance_classes=true has no effect when max_events is unset "
+          "(all events are used regardless). Set max_events to the desired total "
           "if you want equal signal and background counts.")
-if GLOBAL_EVAL_STEP is not None and (not isinstance(GLOBAL_EVAL_STEP, int) or GLOBAL_EVAL_STEP < 1):
-    print("Error: GLOBAL_EVAL_STEP must be an integer >= 1 or None.")
-    sys.exit(1)
-if BATCH_EVAL_STEP is not None and (not isinstance(BATCH_EVAL_STEP, int) or BATCH_EVAL_STEP < 1):
-    print("Error: BATCH_EVAL_STEP must be an integer >= 1 or None.")
-    sys.exit(1)
-if not isinstance(SIMULATOR_METHOD, str):
-    print("Error: SIMULATOR_METHOD must be a string (e.g., 'automatic', 'statevector').")
-    sys.exit(1)
-if IBM_BACKEND is not None and not isinstance(IBM_BACKEND, str):
-    print("Error: IBM_BACKEND must be a string (IBM QPU name) or None.")
-    sys.exit(1)
-if IBM_TOKEN is not None and not isinstance(IBM_TOKEN, str):
-    print("Error: IBM_TOKEN must be a string or None.")
-    sys.exit(1)
-if IBM_BACKEND is not None and USE_STATEVECTOR:
-    print("Error: IBM_BACKEND and USE_STATEVECTOR=True are incompatible. "
-          "Real hardware always uses shot-based measurement.")
-    sys.exit(1)
-if RUN_TAG is not None and not isinstance(RUN_TAG, str):
-    print("Error: RUN_TAG must be a string or None.")
-    sys.exit(1)
-if n_layers   < 1:
-    print("Error: n_layers must be >= 1.")
-    sys.exit(1)
-if n_iter     < 1:
-    print("Error: n_iter must be >= 1.")
-    sys.exit(1)
-if not isinstance(BATCH_SIZE_IS_FRACTION, bool):
-    print("Error: BATCH_SIZE_IS_FRACTION must be True or False.")
-    sys.exit(1)
-if batch_size_is_fraction:
-    if not isinstance(batch_size, (int, float)) or not (0.0 < float(batch_size) <= 1.0):
-        print(f"Error: BATCH_SIZE={batch_size} with BATCH_SIZE_IS_FRACTION=True must be in (0, 1].")
-        sys.exit(1)
-else:
-    if not isinstance(batch_size, int) or batch_size < 1:
-        print("Error: BATCH_SIZE must be an integer >= 1 when BATCH_SIZE_IS_FRACTION=False.")
-        sys.exit(1)
-if max_events is not None and max_events < 1:
-    print("Error: --max-events must be >= 1.")
-    sys.exit(1)
-if not USE_STATEVECTOR and (not isinstance(Nm, int) or Nm < 1):
-    print("Error: Nm must be an integer >= 1 when USE_STATEVECTOR is False.")
-    sys.exit(1)
-if not isinstance(ALPHA,   (int, float)) or ALPHA   <= 0:
-    print("Error: ALPHA must be > 0.")
-    sys.exit(1)
-if not isinstance(BETA1,   (int, float)) or not (0 <= BETA1 < 1):
-    print("Error: BETA1 must be in [0, 1).")
-    sys.exit(1)
-if not isinstance(BETA2,   (int, float)) or not (0 <= BETA2 < 1):
-    print("Error: BETA2 must be in [0, 1).")
-    sys.exit(1)
-if not isinstance(EPSILON, (int, float)) or EPSILON <= 0:
-    print("Error: EPSILON must be > 0.")
-    sys.exit(1)
-if SIM_SEED is not None and (not isinstance(SIM_SEED, int) or SIM_SEED < 0):
-    print("Error: SIM_SEED must be a non-negative integer or None.")
-    sys.exit(1)
 
 # Load circuits library.
 if not os.path.isfile(circuits_file):
@@ -461,11 +211,11 @@ def parse_checkpoints(raw, n_iter_total, setting_name, auto_step=None):
     return ckpt_set, include_start
 
 global_ckpt_set, global_do_start = parse_checkpoints(
-    GLOBAL_EVAL_CHECKPOINTS, n_iter, "GLOBAL_EVAL_CHECKPOINTS",
-    auto_step=GLOBAL_EVAL_STEP)
+    cfg.model.checkpoints.global_checkpoints, n_iter, "GLOBAL_EVAL_CHECKPOINTS",
+    auto_step=cfg.model.checkpoints.global_step)
 batch_ckpt_set,  batch_do_start  = parse_checkpoints(
-    BATCH_EVAL_CHECKPOINTS,  n_iter, "BATCH_EVAL_CHECKPOINTS",
-    auto_step=BATCH_EVAL_STEP)
+    cfg.model.checkpoints.batch_checkpoints,  n_iter, "BATCH_EVAL_CHECKPOINTS",
+    auto_step=cfg.model.checkpoints.batch_step)
 
 
 # Print effective configuration.
@@ -480,29 +230,29 @@ print(f"  Layers / params   : {n_layers} layers, {N_PARAMS} parameters "
 print(f"  Signal file       : {signal_file}")
 print(f"  Background file   : {background_file}")
 print(f"  Max events        : {max_events if max_events is not None else 'all'}")
-print(f"  Balance classes   : {BALANCE_CLASSES}")
-print(f"  Event order       : {EVENT_ORDER}  (shuffle seed={DATA_SHUFFLE_SEED})")
-print(f"  Reshuffle passes  : {RESHUFFLE_BETWEEN_PASSES}  (seed={PASS_RESHUFFLE_SEED})")
+print(f"  Balance classes   : {cfg.data.balance_classes}")
+print(f"  Event order       : {cfg.data.event_order}  (shuffle seed={cfg.seeds.data_shuffle})")
+print(f"  Reshuffle passes  : {cfg.data.reshuffle_between_passes}  (seed={cfg.seeds.pass_reshuffle})")
 print(f"  N_iter            : {n_iter}")
 _bs_display = (f"{batch_size} (= {float(batch_size)*100:.1f}% of total events; resolved after data loading)"
                if batch_size_is_fraction else str(batch_size))
 print(f"  Batch size        : {_bs_display}")
-print(f"  Adam (sklearn)    : alpha={ALPHA}  beta1={BETA1}  beta2={BETA2}  epsilon={EPSILON}")
+print(f"  Adam (sklearn)    : alpha={cfg.model.adam.alpha}  beta1={cfg.model.adam.beta1}  beta2={cfg.model.adam.beta2}  epsilon={cfg.model.adam.epsilon}")
 print(f"  Adam formulation  : sklearn AdamOptimizer, Kingma & Ba 2014 (constant-beta EMA)")
-print(f"  Theta init seed   : {THETA_INIT_SEED}")
-_gstep_str = f"  (auto-step every {GLOBAL_EVAL_STEP})" if GLOBAL_EVAL_STEP else ""
-_bstep_str = f"  (auto-step every {BATCH_EVAL_STEP})"  if BATCH_EVAL_STEP  else ""
+print(f"  Theta init seed   : {cfg.seeds.theta_init}")
+_gstep_str = f"  (auto-step every {cfg.model.checkpoints.global_step})" if cfg.model.checkpoints.global_step else ""
+_bstep_str = f"  (auto-step every {cfg.model.checkpoints.batch_step})"  if cfg.model.checkpoints.batch_step  else ""
 print(f"  Global eval ckpts : start={global_do_start}, at_n_iter={sorted(global_ckpt_set)}{_gstep_str}")
 print(f"  Batch  eval ckpts : start={batch_do_start},  at_n_iter={sorted(batch_ckpt_set)}{_bstep_str}")
-if USE_STATEVECTOR:
+if cfg.model.backend.use_statevector:
     _sim_desc = "Statevector (exact, no shot noise)"
 else:
-    _sim_desc = f"Shot-based  Nm={Nm}  method={SIMULATOR_METHOD}"
-print(f"  Simulation mode   : {_sim_desc}  (sim seed={SIM_SEED if SIM_SEED is not None else 'random'})")
-if IBM_BACKEND is not None:
-    print(f"  IBM backend       : {IBM_BACKEND}  (real quantum hardware)")
-if RUN_TAG is not None:
-    print(f"  Run tag           : {RUN_TAG}")
+    _sim_desc = f"Shot-based  Nm={cfg.model.backend.nm}  method={cfg.model.backend.simulator_method}"
+print(f"  Simulation mode   : {_sim_desc}  (sim seed={cfg.seeds.simulator})")
+if cfg.model.backend.ibm_backend is not None:
+    print(f"  IBM backend       : {cfg.model.backend.ibm_backend}  (real quantum hardware)")
+if cfg.data.run_tag:
+    print(f"  Run tag           : {cfg.data.run_tag}")
 print(f"{'='*62}\n")
 
 
@@ -556,9 +306,9 @@ print(f"  Loaded : {len(s_feats) + len(b_feats)} events ({len(s_feats)} signal, 
 all_feats   = np.array(s_feats + b_feats)
 all_weights = np.concatenate([s_weights, b_weights])
 all_labels  = np.array(s_labels + b_labels, dtype=float)
-rng         = np.random.default_rng(seed=DATA_SHUFFLE_SEED)
+rng         = np.random.default_rng(seed=cfg.seeds.data_shuffle)
 
-if BALANCE_CLASSES and max_events is not None:
+if cfg.data.balance_classes and max_events is not None:
     n_each    = max_events // 2
     available = min(len(s_feats), len(b_feats))
     if n_each > available:
@@ -589,13 +339,13 @@ else:
         weights = weights[:max_events]
         labels  = labels[:max_events]
 
-if EVENT_ORDER == "signal_first":
+if cfg.data.event_order == "signal_first":
     sig_m = labels == 1
     bkg_m = labels == 0
     events  = np.concatenate([events[sig_m],  events[bkg_m]])
     weights = np.concatenate([weights[sig_m], weights[bkg_m]])
     labels  = np.concatenate([labels[sig_m],  labels[bkg_m]])
-elif EVENT_ORDER == "background_first":
+elif cfg.data.event_order == "background_first":
     sig_m = labels == 1
     bkg_m = labels == 0
     events  = np.concatenate([events[bkg_m],  events[sig_m]])
@@ -652,30 +402,31 @@ print(f"  Batches per N_iter : {N_BATCHES_PER_ITER}  (batch_size={batch_size})\n
 # --- Backend -----------------------------------------------------------------
 # Select either the local AerSimulator or a real IBM Quantum computer.
 
-if IBM_BACKEND is not None:
+if cfg.model.backend.ibm_backend is not None:
     try:
         from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as _IBMSampler
     except ImportError:
-        print("Error: IBM_BACKEND is set but qiskit_ibm_runtime is not installed.")
+        print("Error: model.backend.ibm_backend is set but qiskit_ibm_runtime is not installed.")
         print("  Run: pip install qiskit-ibm-runtime")
         sys.exit(1)
-    if IBM_TOKEN is not None:
-        service = QiskitRuntimeService(token=IBM_TOKEN)
+    # Token from the IBM_TOKEN environment variable (e.g. uv run --env-file .env);
+    # unset = credentials saved in the local qiskit-ibm-runtime account.
+    _ibm_token = os.environ.get("IBM_TOKEN")
+    if _ibm_token:
+        service = QiskitRuntimeService(token=_ibm_token)
     else:
         service = QiskitRuntimeService()
-    backend      = service.backend(IBM_BACKEND)
+    backend      = service.backend(cfg.model.backend.ibm_backend)
     _ibm_sampler = _IBMSampler(backend=backend)
-    print(f"  Using real IBM Quantum hardware: {IBM_BACKEND}")
+    print(f"  Using real IBM Quantum hardware: {cfg.model.backend.ibm_backend}")
 else:
     _ibm_sampler = None
     # max_parallel_experiments=0: use all available CPU cores when a batch of circuits
     # is submitted in a single backend.run() call. Gracefully degrades to sequential
     # execution if only one core is available. No effect in statevector mode.
-    if SIM_SEED is not None:
-        backend = AerSimulator(method=SIMULATOR_METHOD, seed_simulator=SIM_SEED,
-                               max_parallel_experiments=0)
-    else:
-        backend = AerSimulator(method=SIMULATOR_METHOD, max_parallel_experiments=0)
+    backend = AerSimulator(method=cfg.model.backend.simulator_method,
+                           seed_simulator=cfg.seeds.simulator,
+                           max_parallel_experiments=0)
 
 
 # --- Preprocessing -----------------------------------------------------------
@@ -709,7 +460,7 @@ def build_event_circuit(amplitudes, theta_params):
     """
     emb_qc  = embed_state_in_qiskit(amplitudes)
     full_qc, _ = variational_form_fn(emb_qc, list(theta_params), n_layers)
-    if not USE_STATEVECTOR:
+    if not cfg.model.backend.use_statevector:
         full_qc.measure_all()
     return transpile(full_qc, backend)
 
@@ -728,21 +479,21 @@ def _run_circuits_batch(batch_circuits, theta):
         qc.assign_parameters({params[i]: float(v) for i, v in enumerate(theta)})
         for qc, params in batch_circuits
     ]
-    if USE_STATEVECTOR:
+    if cfg.model.backend.use_statevector:
         return np.array([
             float(Statevector.from_instruction(b).probabilities([0])[1])  # [0]=qubit index; [1]=P(qubit 0=|1>)
             for b in bound
         ])
     # Qiskit little-endian: bitstring is q_{n-1}...q_1 q_0, so k[-1] is qubit 0.
-    if IBM_BACKEND is not None:
-        result = _ibm_sampler.run(bound, shots=Nm).result()
+    if cfg.model.backend.ibm_backend is not None:
+        result = _ibm_sampler.run(bound, shots=cfg.model.backend.nm).result()
         values = []
         for i in range(len(bound)):
             counts = result[i].data.meas.get_counts()
             total  = sum(counts.values())
             values.append(float(sum(v for k, v in counts.items() if k[-1] == '1') / total))
         return np.array(values)
-    job    = backend.run(bound, shots=Nm)
+    job    = backend.run(bound, shots=cfg.model.backend.nm)
     result = job.result()
     values = []
     for i in range(len(bound)):
@@ -934,17 +685,17 @@ print(f"  Shift rule classification: {_n_two} two-term (Rx/Ry/Rz), "
       f"{_n_four} four-term (CRx/CRy/CRz)\n")
 
 # Initialise theta uniformly in [-pi, pi].
-rng_theta     = np.random.default_rng(seed=THETA_INIT_SEED)
+rng_theta     = np.random.default_rng(seed=cfg.seeds.theta_init)
 theta_current = rng_theta.uniform(-np.pi, np.pi, N_PARAMS)
 
 # Initialise sklearn AdamOptimizer.
 # params is a list containing theta_current; update_params() modifies it in place.
 optimizer = AdamOptimizer(
     params             = [theta_current],
-    learning_rate_init = ALPHA,
-    beta_1             = BETA1,
-    beta_2             = BETA2,
-    epsilon            = EPSILON,
+    learning_rate_init = cfg.model.adam.alpha,
+    beta_1             = cfg.model.adam.beta1,
+    beta_2             = cfg.model.adam.beta2,
+    epsilon            = cfg.model.adam.epsilon,
 )
 
 # Storage for checkpoint results.
@@ -957,9 +708,9 @@ label_width = max(5, n_width)   # "start" is 5 chars; ensures [n=start] aligns w
 
 print(f"Starting training: {n_iter} passes x {N_BATCHES_PER_ITER} batches "
       f"x {batch_size} events/batch")
-print(f"  Simulation : {'statevector (exact)' if USE_STATEVECTOR else f'Nm={Nm} shots'}")
+print(f"  Simulation : {'statevector (exact)' if cfg.model.backend.use_statevector else f'Nm={cfg.model.backend.nm} shots'}")
 print(f"  Adam       : sklearn AdamOptimizer, Kingma & Ba 2014  "
-      f"alpha={ALPHA}  beta1={BETA1}  beta2={BETA2}\n")
+      f"alpha={cfg.model.adam.alpha}  beta1={cfg.model.adam.beta1}  beta2={cfg.model.adam.beta2}\n")
 
 
 # =============================================================================
@@ -998,11 +749,8 @@ pass_bar = tqdm(total=n_iter, desc="Training", unit="pass", position=0, leave=Tr
 for current_iter in range(1, n_iter + 1):
 
     # Optionally reshuffle the event order at the start of each pass after the first.
-    if RESHUFFLE_BETWEEN_PASSES and current_iter > 1:
-        if PASS_RESHUFFLE_SEED is not None:
-            rng_reshuffle = np.random.default_rng(seed=PASS_RESHUFFLE_SEED + current_iter)
-        else:
-            rng_reshuffle = np.random.default_rng()
+    if cfg.data.reshuffle_between_passes and current_iter > 1:
+        rng_reshuffle = np.random.default_rng(seed=cfg.seeds.pass_reshuffle + current_iter)
         perm          = rng_reshuffle.permutation(N_EVENTS)
         pass_circuits = [all_circuits[i] for i in perm]
         pass_labels   = labels[perm]
@@ -1071,7 +819,7 @@ theta_labels  = generate_theta_labels(gate_sequence)
 timestamp  = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 _base_name = (f"circuit{circuit_number}_layers{n_layers}_"
               f"{n_iter}iter_batch{batch_size}_{timestamp}")
-output_dir = f"{RUN_TAG}_{_base_name}" if RUN_TAG is not None else _base_name
+output_dir = f"{cfg.data.run_tag}_{_base_name}" if cfg.data.run_tag else _base_name
 os.makedirs(output_dir, exist_ok=True)
 print(f"\nSaving outputs to: {output_dir}/")
 
@@ -1082,40 +830,40 @@ json_path = os.path.join(output_dir, "results.json")
 results = {
     "run_info": {
         "circuits_library"        : circuits_name_only,
-        "signal_file"             : sig_name_only,
-        "background_file"         : bkg_name_only,
-        "data_folder"             : data_folder_name,
+        "signal_file"             : cfg.data.sig_path.name,
+        "background_file"         : cfg.data.bkg_path.name,
+        "data_folder"             : cfg.data.sig_path.resolve().parent.name,
         "timestamp"               : timestamp,
         "n_signal"                : len(s_feats),
         "n_background"            : len(b_feats),
         "n_events_loaded"         : len(all_feats),
         "n_events_used"           : N_EVENTS,
         "max_events_limit"        : max_events,
-        "BALANCE_CLASSES"         : BALANCE_CLASSES,
-        "EVENT_ORDER"             : EVENT_ORDER,
-        "DATA_SHUFFLE_SEED"       : DATA_SHUFFLE_SEED,
-        "RESHUFFLE_BETWEEN_PASSES": RESHUFFLE_BETWEEN_PASSES,
-        "PASS_RESHUFFLE_SEED"     : PASS_RESHUFFLE_SEED,
+        "BALANCE_CLASSES"         : cfg.data.balance_classes,
+        "EVENT_ORDER"             : cfg.data.event_order,
+        "DATA_SHUFFLE_SEED"       : cfg.seeds.data_shuffle,
+        "RESHUFFLE_BETWEEN_PASSES": cfg.data.reshuffle_between_passes,
+        "PASS_RESHUFFLE_SEED"     : cfg.seeds.pass_reshuffle,
         "N_ITER"                  : n_iter,
-        "BATCH_SIZE_IS_FRACTION"  : BATCH_SIZE_IS_FRACTION,
+        "BATCH_SIZE_IS_FRACTION"  : batch_size_is_fraction,
         "BATCH_SIZE"              : batch_size,
         "N_BATCHES_PER_ITER"      : N_BATCHES_PER_ITER,
-        "ALPHA"                   : ALPHA,
-        "BETA1"                   : BETA1,
-        "BETA2"                   : BETA2,
-        "EPSILON"                 : EPSILON,
+        "ALPHA"                   : cfg.model.adam.alpha,
+        "BETA1"                   : cfg.model.adam.beta1,
+        "BETA2"                   : cfg.model.adam.beta2,
+        "EPSILON"                 : cfg.model.adam.epsilon,
         "adam_formulation"        : "sklearn_AdamOptimizer_Kingma_Ba_2014",
-        "THETA_INIT_SEED"         : THETA_INIT_SEED,
+        "THETA_INIT_SEED"         : cfg.seeds.theta_init,
         "GLOBAL_EVAL_CHECKPOINTS" : sorted(global_ckpt_set),
-        "GLOBAL_EVAL_STEP"        : GLOBAL_EVAL_STEP,
+        "GLOBAL_EVAL_STEP"        : cfg.model.checkpoints.global_step,
         "BATCH_EVAL_CHECKPOINTS"  : sorted(batch_ckpt_set),
-        "BATCH_EVAL_STEP"         : BATCH_EVAL_STEP,
-        "USE_STATEVECTOR"         : USE_STATEVECTOR,
-        "SIMULATOR_METHOD"        : SIMULATOR_METHOD,
-        "Nm"                      : Nm,
-        "SIM_SEED"                : SIM_SEED,
-        "IBM_BACKEND"             : IBM_BACKEND,
-        "RUN_TAG"                 : RUN_TAG,
+        "BATCH_EVAL_STEP"         : cfg.model.checkpoints.batch_step,
+        "USE_STATEVECTOR"         : cfg.model.backend.use_statevector,
+        "SIMULATOR_METHOD"        : cfg.model.backend.simulator_method,
+        "Nm"                      : cfg.model.backend.nm,
+        "SIM_SEED"                : cfg.seeds.simulator,
+        "IBM_BACKEND"             : cfg.model.backend.ibm_backend,
+        "RUN_TAG"                 : cfg.data.run_tag,
     },
     "circuit": {
         "circuit_number"     : circuit_number,
@@ -1166,12 +914,12 @@ theta_literal  = repr(theta_final)
 labels_literal = repr(theta_labels)
 
 # Human-readable simulation label for the header comment.
-if IBM_BACKEND is not None:
-    _sim_label = f"IBM hardware ({IBM_BACKEND})  Nm={Nm} shots"
-elif USE_STATEVECTOR:
+if cfg.model.backend.ibm_backend is not None:
+    _sim_label = f"IBM hardware ({cfg.model.backend.ibm_backend})  Nm={cfg.model.backend.nm} shots"
+elif cfg.model.backend.use_statevector:
     _sim_label = "statevector (exact, no shot noise)"
 else:
-    _sim_label = f"shot-based  Nm={Nm}"
+    _sim_label = f"shot-based  Nm={cfg.model.backend.nm}"
 
 classifier_script = textwrap.dedent(f"""\
     # classifier.py  —  standalone classifier generated by PQC_HEP_training_file_Qiskit.py
@@ -1182,8 +930,8 @@ classifier_script = textwrap.dedent(f"""\
     #   Layers     : {n_layers}  |  Parameters: {N_PARAMS}
     #   Events     : {N_EVENTS}  |  N_iter: {n_iter}  |  Batch size: {batch_size}
     #   Simulation : {_sim_label}
-    #   Adam       : alpha={ALPHA}  beta1={BETA1}  beta2={BETA2}
-    #                epsilon={EPSILON}  theta_init_seed={THETA_INIT_SEED}
+    #   Adam       : alpha={cfg.model.adam.alpha}  beta1={cfg.model.adam.beta1}  beta2={cfg.model.adam.beta2}
+    #                epsilon={cfg.model.adam.epsilon}  theta_init_seed={cfg.seeds.theta_init}
     #
     # Usage:
     #   python classifier.py              — classify one event (set your_event_features below)
@@ -1205,13 +953,13 @@ classifier_script = textwrap.dedent(f"""\
     N_QUBITS        = {N_QUBITS}
     N_FEAT          = {N_FEAT}
     N_DIM           = {N_DIM}
-    USE_STATEVECTOR = {USE_STATEVECTOR}   # True = exact statevector; False = shot-based
-    Nm              = {Nm}                # shots per call (used when USE_STATEVECTOR=False and IBM=None)
+    USE_STATEVECTOR = {cfg.model.backend.use_statevector}   # True = exact statevector; False = shot-based
+    Nm              = {cfg.model.backend.nm}                # shots per call (used when USE_STATEVECTOR=False and IBM=None)
 
     # ---- IBM Quantum backend (name baked in; credentials NOT stored here) --------
     # If training used IBM hardware, IBM_BACKEND holds the backend name.
     # Set IBM_TOKEN below to run inference on that hardware; leave as None for local simulation.
-    IBM_BACKEND = {repr(IBM_BACKEND)}
+    IBM_BACKEND = {repr(cfg.model.backend.ibm_backend)}
     IBM_TOKEN   = None   # <-- fill in your IBM Quantum API token if you want to use IBM hardware
 
     # ---- Trained parameters (baked in as literals inside the circuit below) ------
@@ -1307,9 +1055,8 @@ if batch_eval_results:
         print(f"  Last batch  eval (n={last_b[-1]}): loss={batch_eval_results[last_b[-1]]:.6f}")
 print(f"  Output folder: {output_dir}/")
 
-if SHOW_ELAPSED_TIME:
-    _elapsed  = time.time() - _t_start
-    _sim_info = 'statevector (exact)' if USE_STATEVECTOR else f'Nm={Nm} shots'
-    print(f"\n  Elapsed time : {_elapsed:.1f} s  ({_elapsed/60:.1f} min)")
-    print(f"  Per event    : {_elapsed/N_EVENTS:.3f} s/event  "
-          f"(N_iter={n_iter}, {_sim_info}, {N_EVENTS} events)")
+_elapsed  = time.time() - _t_start
+_sim_info = 'statevector (exact)' if cfg.model.backend.use_statevector else f'Nm={cfg.model.backend.nm} shots'
+print(f"\n  Elapsed time : {_elapsed:.1f} s  ({_elapsed/60:.1f} min)")
+print(f"  Per event    : {_elapsed/N_EVENTS:.3f} s/event  "
+      f"(N_iter={n_iter}, {_sim_info}, {N_EVENTS} events)")
