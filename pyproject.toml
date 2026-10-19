@@ -1,0 +1,47 @@
+[project]
+name = "pqc-hep"
+version = "0.1.0"
+description = "Parameterised quantum circuits for HEP binary classification"
+readme = "Readme.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy",
+  "qiskit",
+  "qiskit-aer",
+  # AdamOptimizer is imported from a private sklearn module: pinned via uv.lock.
+  "scikit-learn",
+  "loguru",
+  "tqdm",
+  "pydantic>=2.13.5",
+]
+
+[project.optional-dependencies]
+ibm = ["qiskit-ibm-runtime"]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "pre-commit"]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 88
+# Legacy code from the original project: excluded until it is cleaned up.
+extend-exclude = [
+  "adriano_code",
+  "tests/original.py",
+  "src/pqc_hep/main.py",
+  "src/pqc_hep/circuits_library_Qiskit.py",
+]
+# Apply the excludes also when pre-commit passes file names explicitly.
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "NPY"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["refactoring: equivalence with Adriano's original code (needs src/pqc_hep/Data/)"]
+addopts = "-m 'not refactoring'"
