@@ -975,18 +975,16 @@ _example_idx = [*np.flatnonzero(labels == 1)[:5], *np.flatnonzero(labels == 0)[:
 _example_p = _run_circuits_batch([all_circuits[i] for i in _example_idx], theta_final)
 model = {
     "timestamp": timestamp,
-    "circuit_number": circuit_number,
-    "circuit_description": circuit_description,
-    "n_layers": n_layers,
+    "circuit": {
+        **cfg.model.circuit.model_dump(mode="json"),
+        "description": circuit_description,
+    },
     "n_qubits": N_QUBITS,
     "n_feat": N_FEAT,
     "gates": gate_sequence,
     "backend": {
-        "use_statevector": cfg.model.backend.use_statevector,
-        "nm": cfg.model.backend.nm,
-        "simulator_method": cfg.model.backend.simulator_method,
+        **cfg.model.backend.model_dump(mode="json"),
         "sim_seed": cfg.seeds.simulator,
-        "ibm_backend": cfg.model.backend.ibm_backend,
     },
     "examples": [
         {"features": events[i].tolist(), "label": int(labels[i]), "expected_p": float(p)}
