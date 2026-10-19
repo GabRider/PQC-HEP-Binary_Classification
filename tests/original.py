@@ -1,6 +1,7 @@
 """
 Copy of adriano_code/.../PQC_HEP_training_file_Qiskit.py used by test_equivalence.py.
-Only change: fixed seeds, RESHUFFLE_BETWEEN_PASSES=True, Nm=100.
+Only changes: fixed seeds, RESHUFFLE_BETWEEN_PASSES=True, Nm=100, and
+USE_STATEVECTOR read from the PQC_STATEVECTOR environment variable ("1" = True).
 
 PQC_HEP_training_file_Qiskit.py
 
@@ -203,7 +204,7 @@ BATCH_EVAL_STEP  = None   # integer >= 1, or None to disable
 # and shot-based measurement simulation (realistic for real quantum hardware).
 # True  : exact P(|1>) from statevector — no shot noise, deterministic, fast.
 # False : estimate P(|1>) from Nm measurement shots — realistic for real hardware (default).
-USE_STATEVECTOR   = False
+USE_STATEVECTOR   = os.environ.get("PQC_STATEVECTOR") == "1"
 Nm                = 100      # shots per circuit evaluation (ignored when USE_STATEVECTOR=True)
 SIM_SEED          = 44         # AerSimulator RNG seed (int >= 0) or None for a random seed
 # Local simulation method (only used when IBM_BACKEND=None and USE_STATEVECTOR=False).

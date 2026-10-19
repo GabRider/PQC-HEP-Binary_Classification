@@ -39,8 +39,20 @@ uv run --env-file ../../.env python main.py --config my_run.toml   # IBM hardwar
 
 Relative paths in the TOML file are relative to the directory you run from.
 Each run writes a folder `<run_tag>_circuit<N>_layers<L>_<iter>iter_batch<B>_<timestamp>/`
-in the current directory, containing `results.json` (full training record) and
-`classifier.py` (standalone classifier with the trained parameters).
+in the current directory, containing:
+
+- `results.json`: full training record;
+- `model.json`: trained gates, backend settings and 10 training events with
+  their final P(signal);
+- `classifier.py`: a copy of `src/pqc_hep/classifier.py` that reads `model.json`
+  and needs only numpy, qiskit and qiskit-aer.
+
+To classify events, send or open the folder and run:
+
+```bash
+python classifier.py              # self-test: reproduces the 10 stored examples
+python classifier.py events.csv   # classify every event (columns 0-11: features)
+```
 
 ## Configuration
 
@@ -95,14 +107,16 @@ To do:
 ## Testing the refactoring
 
 ```bash
-uv run pytest -m refactoring
+uv run pytest -m refactoring   # training: theta_final and every loss
+uv run pytest -m classifier    # classifier.py: predictions on 20 events
 ```
 
-This test runs `tests/original.py` (a copy of the original script with fixed
-seeds) and `main.py` with the same settings, and requires identical results
-(`theta_final` and every loss). It needs the data files (skipped otherwise),
-takes about 30 s and covers the shot-based mode. It is excluded from a plain
-`uv run pytest`.
+Both tests run `tests/original.py` (a copy of the original script with fixed
+seeds) and `main.py` with the same settings. `refactoring` requires identical
+training results in the shot-based mode; `classifier` trains in statevector
+mode, the only mode where the original classifier is deterministic, and
+requires identical predictions. Each test needs the data files (skipped
+otherwise), takes about 30 s, and is excluded from a plain `uv run pytest`.
 
 A failure means the refactored code changed the results: a bug, or an intended
 change of behaviour that makes this test obsolete.

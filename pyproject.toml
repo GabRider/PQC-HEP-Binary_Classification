@@ -43,5 +43,8 @@ select = ["E", "F", "W", "I", "B", "UP", "NPY"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["refactoring: equivalence with Adriano's original code (needs src/pqc_hep/Data/)"]
-addopts = "-m 'not refactoring'"
+markers = [
+  "refactoring: training gives the same results as Adriano's code (needs src/pqc_hep/Data/)",
+  "classifier: classifier.py gives the same predictions as Adriano's (needs src/pqc_hep/Data/)",
+]
+addopts = "-m 'not refactoring and not classifier'"
