@@ -10,9 +10,9 @@ from pqc_hep.config.base import Section
 
 class DataConfig(Section):
     # strict=False lets TOML strings become paths; the files must exist.
-    sig_path: FilePath = Field(Path("../Data/train_sig.csv"), strict=False)
-    bkg_path: FilePath = Field(Path("../Data/train_bkg.csv"), strict=False)
-    max_events: PositiveInt | None = None  # None = all events
+    sig_path: FilePath = Field(Path("Data/train_sig.csv"), strict=False)
+    bkg_path: FilePath = Field(Path("Data/train_bkg.csv"), strict=False)
+    max_events: PositiveInt | Literal["all"] = 1000
     balance_classes: bool = False  # equal S and B counts; needs max_events
     event_order: Literal["random", "signal_first", "background_first"] = "random"
     reshuffle_between_passes: bool = False

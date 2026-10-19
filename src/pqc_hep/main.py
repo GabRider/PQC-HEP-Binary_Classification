@@ -97,8 +97,8 @@ from pqc_hep.config import load as load_config
 # Fixed by the physics setup; do not change without matching data and circuits.
 # =============================================================================
 N_QUBITS = 4
-N_FEAT   = 12
-N_DIM    = 2**N_QUBITS    # Hilbert-space dimension
+N_FEAT = 12
+N_DIM = 2**N_QUBITS  # Hilbert-space dimension
 
 _t_start = time.time()
 
@@ -112,8 +112,12 @@ _t_start = time.time()
 parser = argparse.ArgumentParser(
     description="PQC mini-batch training pipeline for HEP binary classification (Qiskit)."
 )
-parser.add_argument("--config", type=str, default=None,
-                    help="TOML configuration file; built-in defaults are used when omitted.")
+parser.add_argument(
+    "--config",
+    type=str,
+    default=None,
+    help="TOML configuration file; built-in defaults are used when omitted.",
+)
 args = parser.parse_args()
 
 try:
@@ -122,22 +126,26 @@ except (OSError, TypeError, ValueError) as e:
     print(f"Error: {e}")
     sys.exit(1)
 
-circuits_file  = cfg.model.circuit.circuits_file
+circuits_file = cfg.model.circuit.circuits_file
 circuit_number = cfg.model.circuit.circuit_number
-n_layers       = cfg.model.circuit.n_layers
-n_iter         = cfg.model.training.n_iter
-max_events     = cfg.data.max_events
+n_layers = cfg.model.circuit.n_layers
+n_iter = cfg.model.training.n_iter
+max_events = None if cfg.data.max_events == "all" else cfg.data.max_events
 batch_size_is_fraction = isinstance(cfg.model.training.batch_size, float)
-batch_size     = cfg.model.training.batch_size   # resolved to an event count after data loading
+batch_size = (
+    cfg.model.training.batch_size
+)  # resolved to an event count after data loading
 
-signal_file     = str(cfg.data.sig_path)
+signal_file = str(cfg.data.sig_path)
 background_file = str(cfg.data.bkg_path)
 circuits_name_only = os.path.basename(circuits_file)
 
 if cfg.data.balance_classes and max_events is None:
-    print("Warning: balance_classes=true has no effect when max_events is unset "
-          "(all events are used regardless). Set max_events to the desired total "
-          "if you want equal signal and background counts.")
+    print(
+        "Warning: balance_classes=true has no effect when max_events is unset "
+        "(all events are used regardless). Set max_events to the desired total "
+        "if you want equal signal and background counts."
+    )
 
 # Load circuits library.
 if not os.path.isfile(circuits_file):
@@ -148,16 +156,25 @@ spec = importlib.util.spec_from_file_location("circuits_library", circuits_file)
 clib = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(clib)
 
-if circuit_number < 1 or circuit_number >= len(clib.CIRCUITS) or clib.CIRCUITS[circuit_number] is None:
-    print(f"Error: circuit_number {circuit_number} is invalid. "
-          f"Available: 1 to {len(clib.CIRCUITS)-1}.")
+if (
+    circuit_number < 1
+    or circuit_number >= len(clib.CIRCUITS)
+    or clib.CIRCUITS[circuit_number] is None
+):
+    print(
+        f"Error: circuit_number {circuit_number} is invalid. "
+        f"Available: 1 to {len(clib.CIRCUITS)-1}."
+    )
     sys.exit(1)
 
-variational_form_fn, fixed_params, layer_params, circuit_description = clib.CIRCUITS[circuit_number]
+variational_form_fn, fixed_params, layer_params, circuit_description = clib.CIRCUITS[
+    circuit_number
+]
 N_PARAMS = fixed_params + n_layers * layer_params
 
 
 # Parse evaluation checkpoints.
+
 
 def parse_checkpoints(raw, n_iter_total, setting_name, auto_step=None):
     """
@@ -171,7 +188,7 @@ def parse_checkpoints(raw, n_iter_total, setting_name, auto_step=None):
     """
     if not raw:
         return set(), False
-    ckpt_set      = set()
+    ckpt_set = set()
     include_start = False
     for val in raw:
         if val == "start":
@@ -182,10 +199,14 @@ def parse_checkpoints(raw, n_iter_total, setting_name, auto_step=None):
             if 1 <= val <= n_iter_total:
                 ckpt_set.add(val)
             else:
-                print(f"Warning: {setting_name} value {val} is outside "
-                      f"[1, {n_iter_total}] and will be skipped.")
+                print(
+                    f"Warning: {setting_name} value {val} is outside "
+                    f"[1, {n_iter_total}] and will be skipped."
+                )
         else:
-            print(f"Warning: {setting_name} value {repr(val)} is not valid and will be skipped.")
+            print(
+                f"Warning: {setting_name} value {repr(val)} is not valid and will be skipped."
+            )
 
     # Auto-fill intermediate checkpoints at regular step intervals.
     # max is taken from the set; min is the set's minimum if 2+ values exist,
@@ -193,9 +214,11 @@ def parse_checkpoints(raw, n_iter_total, setting_name, auto_step=None):
     # one integer is present — fills from the first step up to that endpoint).
     if auto_step is not None:
         if len(ckpt_set) == 0:
-            print(f"Warning: {setting_name}_STEP={auto_step} is set but "
-                  f"{setting_name} has no integer checkpoints to fill between; "
-                  f"auto-fill has no effect.")
+            print(
+                f"Warning: {setting_name}_STEP={auto_step} is set but "
+                f"{setting_name} has no integer checkpoints to fill between; "
+                f"auto-fill has no effect."
+            )
         else:
             before = len(ckpt_set)
             max_val = max(ckpt_set)
@@ -204,56 +227,44 @@ def parse_checkpoints(raw, n_iter_total, setting_name, auto_step=None):
                 if 1 <= v <= n_iter_total:
                     ckpt_set.add(v)
             if len(ckpt_set) == before:
-                print(f"Warning: {setting_name}_STEP={auto_step} produced no "
-                      f"additional checkpoints (step may be larger than the "
-                      f"interval between existing checkpoints or N_ITER={n_iter_total}).")
+                print(
+                    f"Warning: {setting_name}_STEP={auto_step} produced no "
+                    f"additional checkpoints (step may be larger than the "
+                    f"interval between existing checkpoints or N_ITER={n_iter_total})."
+                )
 
     return ckpt_set, include_start
 
+
 global_ckpt_set, global_do_start = parse_checkpoints(
-    cfg.model.checkpoints.global_checkpoints, n_iter, "GLOBAL_EVAL_CHECKPOINTS",
-    auto_step=cfg.model.checkpoints.global_step)
-batch_ckpt_set,  batch_do_start  = parse_checkpoints(
-    cfg.model.checkpoints.batch_checkpoints,  n_iter, "BATCH_EVAL_CHECKPOINTS",
-    auto_step=cfg.model.checkpoints.batch_step)
+    cfg.model.checkpoints.global_checkpoints,
+    n_iter,
+    "GLOBAL_EVAL_CHECKPOINTS",
+    auto_step=cfg.model.checkpoints.global_step,
+)
+batch_ckpt_set, batch_do_start = parse_checkpoints(
+    cfg.model.checkpoints.batch_checkpoints,
+    n_iter,
+    "BATCH_EVAL_CHECKPOINTS",
+    auto_step=cfg.model.checkpoints.batch_step,
+)
 
 
 # Print effective configuration.
 
-print(f"\n{'='*62}")
-print(f"  EFFECTIVE CONFIGURATION")
-print(f"{'='*62}")
-print(f"  Circuits library  : {circuits_file}")
-print(f"  Circuit           : [{circuit_number}] {circuit_description}")
-print(f"  Layers / params   : {n_layers} layers, {N_PARAMS} parameters "
-      f"({fixed_params} fixed + {n_layers}x{layer_params}/layer)")
-print(f"  Signal file       : {signal_file}")
-print(f"  Background file   : {background_file}")
-print(f"  Max events        : {max_events if max_events is not None else 'all'}")
-print(f"  Balance classes   : {cfg.data.balance_classes}")
-print(f"  Event order       : {cfg.data.event_order}  (shuffle seed={cfg.seeds.data_shuffle})")
-print(f"  Reshuffle passes  : {cfg.data.reshuffle_between_passes}  (seed={cfg.seeds.pass_reshuffle})")
-print(f"  N_iter            : {n_iter}")
-_bs_display = (f"{batch_size} (= {float(batch_size)*100:.1f}% of total events; resolved after data loading)"
-               if batch_size_is_fraction else str(batch_size))
-print(f"  Batch size        : {_bs_display}")
-print(f"  Adam (sklearn)    : alpha={cfg.model.adam.alpha}  beta1={cfg.model.adam.beta1}  beta2={cfg.model.adam.beta2}  epsilon={cfg.model.adam.epsilon}")
-print(f"  Adam formulation  : sklearn AdamOptimizer, Kingma & Ba 2014 (constant-beta EMA)")
-print(f"  Theta init seed   : {cfg.seeds.theta_init}")
-_gstep_str = f"  (auto-step every {cfg.model.checkpoints.global_step})" if cfg.model.checkpoints.global_step else ""
-_bstep_str = f"  (auto-step every {cfg.model.checkpoints.batch_step})"  if cfg.model.checkpoints.batch_step  else ""
-print(f"  Global eval ckpts : start={global_do_start}, at_n_iter={sorted(global_ckpt_set)}{_gstep_str}")
-print(f"  Batch  eval ckpts : start={batch_do_start},  at_n_iter={sorted(batch_ckpt_set)}{_bstep_str}")
-if cfg.model.backend.use_statevector:
-    _sim_desc = "Statevector (exact, no shot noise)"
-else:
-    _sim_desc = f"Shot-based  Nm={cfg.model.backend.nm}  method={cfg.model.backend.simulator_method}"
-print(f"  Simulation mode   : {_sim_desc}  (sim seed={cfg.seeds.simulator})")
-if cfg.model.backend.ibm_backend is not None:
-    print(f"  IBM backend       : {cfg.model.backend.ibm_backend}  (real quantum hardware)")
-if cfg.data.run_tag:
-    print(f"  Run tag           : {cfg.data.run_tag}")
-print(f"{'='*62}\n")
+_rule = "=" * 62
+print(f"""
+{_rule}
+  EFFECTIVE CONFIGURATION
+{_rule}
+{cfg}
+[extra]
+  circuit                   : [{circuit_number}] {circuit_description}
+  parameters                : {N_PARAMS} ({fixed_params} fixed + {n_layers}x{layer_params}/layer)
+  global_eval_at            : start={global_do_start}, n_iter={sorted(global_ckpt_set)}
+  batch_eval_at             : start={batch_do_start}, n_iter={sorted(batch_ckpt_set)}
+{_rule}
+""")
 
 
 # =============================================================================
@@ -261,6 +272,7 @@ print(f"{'='*62}\n")
 # =============================================================================
 # Reads signal and background CSV files, selects and orders events, normalises
 # weights relative to the selected training set, and validates batch_size.
+
 
 def load_events(filepath, label):
     """
@@ -278,7 +290,7 @@ def load_events(filepath, label):
             line = line.strip()
             if not line:
                 continue
-            cols = line.split(',')
+            cols = line.split(",")
             try:
                 feats.append([float(x) for x in cols[:12]])
                 wts.append(float(cols[12]))
@@ -290,7 +302,7 @@ def load_events(filepath, label):
 
 
 print("Loading data...")
-s_feats, s_weights, s_labels = load_events(signal_file,     1)
+s_feats, s_weights, s_labels = load_events(signal_file, 1)
 b_feats, b_weights, b_labels = load_events(background_file, 0)
 s_weights = np.array(s_weights, dtype=float)
 b_weights = np.array(b_weights, dtype=float)
@@ -300,88 +312,104 @@ if s_weights.sum() == 0:
 if b_weights.sum() == 0:
     print("Error: background weight sum is zero.")
     sys.exit(1)
-print(f"  Loaded : {len(s_feats) + len(b_feats)} events ({len(s_feats)} signal, {len(b_feats)} background)")
+print(
+    f"  Loaded : {len(s_feats) + len(b_feats)} events ({len(s_feats)} signal, {len(b_feats)} background)"
+)
 
 # Combine and shuffle all events.
-all_feats   = np.array(s_feats + b_feats)
+all_feats = np.array(s_feats + b_feats)
 all_weights = np.concatenate([s_weights, b_weights])
-all_labels  = np.array(s_labels + b_labels, dtype=float)
-rng         = np.random.default_rng(seed=cfg.seeds.data_shuffle)
+all_labels = np.array(s_labels + b_labels, dtype=float)
+rng = np.random.default_rng(seed=cfg.seeds.data_shuffle)
 
 if cfg.data.balance_classes and max_events is not None:
-    n_each    = max_events // 2
+    n_each = max_events // 2
     available = min(len(s_feats), len(b_feats))
     if n_each > available:
-        smaller = 'signal' if len(s_feats) <= len(b_feats) else 'background'
-        print(f"Error: BALANCE_CLASSES requested {n_each} per class but only "
-              f"{available} {smaller} events available. "
-              f"Set MAX_EVENTS <= {2*available} or BALANCE_CLASSES=False.")
+        smaller = "signal" if len(s_feats) <= len(b_feats) else "background"
+        print(
+            f"Error: BALANCE_CLASSES requested {n_each} per class but only "
+            f"{available} {smaller} events available. "
+            f"Set MAX_EVENTS <= {2*available} or BALANCE_CLASSES=False."
+        )
         sys.exit(1)
-    s_idx   = rng.permutation(len(s_feats))[:n_each]
-    b_idx   = rng.permutation(len(b_feats))[:n_each]
-    sel_f   = np.concatenate([np.array(s_feats)[s_idx],               np.array(b_feats)[b_idx]])
-    sel_w   = np.concatenate([s_weights[s_idx],                       b_weights[b_idx]])
-    sel_l   = np.concatenate([np.array(s_labels, dtype=float)[s_idx], np.array(b_labels, dtype=float)[b_idx]])
-    order   = rng.permutation(len(sel_f))
-    events  = sel_f[order]
+    s_idx = rng.permutation(len(s_feats))[:n_each]
+    b_idx = rng.permutation(len(b_feats))[:n_each]
+    sel_f = np.concatenate([np.array(s_feats)[s_idx], np.array(b_feats)[b_idx]])
+    sel_w = np.concatenate([s_weights[s_idx], b_weights[b_idx]])
+    sel_l = np.concatenate(
+        [np.array(s_labels, dtype=float)[s_idx], np.array(b_labels, dtype=float)[b_idx]]
+    )
+    order = rng.permutation(len(sel_f))
+    events = sel_f[order]
     weights = sel_w[order]
-    labels  = sel_l[order]
+    labels = sel_l[order]
 else:
     if max_events is not None and max_events > len(all_feats):
-        print(f"Error: MAX_EVENTS={max_events} exceeds {len(all_feats)} available events.")
+        print(
+            f"Error: MAX_EVENTS={max_events} exceeds {len(all_feats)} available events."
+        )
         sys.exit(1)
-    order   = rng.permutation(len(all_feats))
-    events  = all_feats[order]
+    order = rng.permutation(len(all_feats))
+    events = all_feats[order]
     weights = all_weights[order]
-    labels  = all_labels[order]
+    labels = all_labels[order]
     if max_events is not None:
-        events  = events[:max_events]
+        events = events[:max_events]
         weights = weights[:max_events]
-        labels  = labels[:max_events]
+        labels = labels[:max_events]
 
 if cfg.data.event_order == "signal_first":
     sig_m = labels == 1
     bkg_m = labels == 0
-    events  = np.concatenate([events[sig_m],  events[bkg_m]])
+    events = np.concatenate([events[sig_m], events[bkg_m]])
     weights = np.concatenate([weights[sig_m], weights[bkg_m]])
-    labels  = np.concatenate([labels[sig_m],  labels[bkg_m]])
+    labels = np.concatenate([labels[sig_m], labels[bkg_m]])
 elif cfg.data.event_order == "background_first":
     sig_m = labels == 1
     bkg_m = labels == 0
-    events  = np.concatenate([events[bkg_m],  events[sig_m]])
+    events = np.concatenate([events[bkg_m], events[sig_m]])
     weights = np.concatenate([weights[bkg_m], weights[sig_m]])
-    labels  = np.concatenate([labels[bkg_m],  labels[sig_m]])
+    labels = np.concatenate([labels[bkg_m], labels[sig_m]])
 
 N_EVENTS = len(events)
 
 # Normalise weights: sum(w_S) = sum(w_B) = N(background events in training set).
 # Done after selection so the balance is correct for the events actually trained on.
-_sig_mask    = labels == 1
-_bkg_mask    = labels == 0
+_sig_mask = labels == 1
+_bkg_mask = labels == 0
 _n_bkg_train = int(_bkg_mask.sum())
 if _n_bkg_train > 0 and _sig_mask.sum() > 0:
     weights[_sig_mask] *= _n_bkg_train / np.sum(weights[_sig_mask])
     weights[_bkg_mask] *= _n_bkg_train / np.sum(weights[_bkg_mask])
 
-print(f"  Using  : {N_EVENTS} events ({int(_sig_mask.sum())} signal, {_n_bkg_train} background)")
+print(
+    f"  Using  : {N_EVENTS} events ({int(_sig_mask.sum())} signal, {_n_bkg_train} background)"
+)
 print(f"  Weight normalisation: sum(w_S) = sum(w_B) = {_n_bkg_train}")
 
 # Resolve BATCH_SIZE fraction to an integer now that N_EVENTS is known.
 if batch_size_is_fraction:
     _resolved = int(round(float(batch_size) * N_EVENTS))
     if _resolved < 1:
-        print(f"Error: BATCH_SIZE={batch_size} resolves to {_resolved} events for {N_EVENTS} total, "
-              f"which is < 1. Use a larger fraction.")
+        print(
+            f"Error: BATCH_SIZE={batch_size} resolves to {_resolved} events for {N_EVENTS} total, "
+            f"which is < 1. Use a larger fraction."
+        )
         sys.exit(1)
     batch_size = _resolved
-    print(f"  Batch size (resolved) : {batch_size}  (= {batch_size/N_EVENTS*100:.1f}% of {N_EVENTS} events)")
+    print(
+        f"  Batch size (resolved) : {batch_size}  (= {batch_size/N_EVENTS*100:.1f}% of {N_EVENTS} events)"
+    )
 
 # Validate that batch_size evenly divides the event count.
 if N_EVENTS % batch_size != 0:
     divisors = [i for i in range(1, N_EVENTS + 1) if N_EVENTS % i == 0]
     print(f"\nError: batch_size={batch_size} does not evenly divide {N_EVENTS} events.")
     if batch_size_is_fraction:
-        valid_fracs = [f"{d}/{N_EVENTS} = {d/N_EVENTS:.4f}" for d in divisors if 0 < d < N_EVENTS]
+        valid_fracs = [
+            f"{d}/{N_EVENTS} = {d/N_EVENTS:.4f}" for d in divisors if 0 < d < N_EVENTS
+        ]
         print(f"  Valid batch sizes: {divisors}")
         print(f"  Valid fractions: {valid_fracs[:12]}")
     else:
@@ -406,7 +434,9 @@ if cfg.model.backend.ibm_backend is not None:
     try:
         from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as _IBMSampler
     except ImportError:
-        print("Error: model.backend.ibm_backend is set but qiskit_ibm_runtime is not installed.")
+        print(
+            "Error: model.backend.ibm_backend is set but qiskit_ibm_runtime is not installed."
+        )
         print("  Run: pip install qiskit-ibm-runtime")
         sys.exit(1)
     # Token from the IBM_TOKEN environment variable (e.g. uv run --env-file .env);
@@ -416,7 +446,7 @@ if cfg.model.backend.ibm_backend is not None:
         service = QiskitRuntimeService(token=_ibm_token)
     else:
         service = QiskitRuntimeService()
-    backend      = service.backend(cfg.model.backend.ibm_backend)
+    backend = service.backend(cfg.model.backend.ibm_backend)
     _ibm_sampler = _IBMSampler(backend=backend)
     print(f"  Using real IBM Quantum hardware: {cfg.model.backend.ibm_backend}")
 else:
@@ -424,12 +454,15 @@ else:
     # max_parallel_experiments=0: use all available CPU cores when a batch of circuits
     # is submitted in a single backend.run() call. Gracefully degrades to sequential
     # execution if only one core is available. No effect in statevector mode.
-    backend = AerSimulator(method=cfg.model.backend.simulator_method,
-                           seed_simulator=cfg.seeds.simulator,
-                           max_parallel_experiments=0)
+    backend = AerSimulator(
+        method=cfg.model.backend.simulator_method,
+        seed_simulator=cfg.seeds.simulator,
+        max_parallel_experiments=0,
+    )
 
 
 # --- Preprocessing -----------------------------------------------------------
+
 
 def preprocess_event(x_raw):
     """
@@ -445,6 +478,7 @@ def preprocess_event(x_raw):
 
 # --- Amplitude embedding and circuit construction ----------------------------
 
+
 def embed_state_in_qiskit(amplitudes):
     """Return a QuantumCircuit that prepares the given amplitude vector from |0000>."""
     qc = QuantumCircuit(N_QUBITS)
@@ -458,7 +492,7 @@ def build_event_circuit(amplitudes, theta_params):
     variational form. Transpiled once and reused across all passes by binding theta values
     via assign_parameters(), avoiding repeated transpilation overhead.
     """
-    emb_qc  = embed_state_in_qiskit(amplitudes)
+    emb_qc = embed_state_in_qiskit(amplitudes)
     full_qc, _ = variational_form_fn(emb_qc, list(theta_params), n_layers)
     if not cfg.model.backend.use_statevector:
         full_qc.measure_all()
@@ -480,30 +514,37 @@ def _run_circuits_batch(batch_circuits, theta):
         for qc, params in batch_circuits
     ]
     if cfg.model.backend.use_statevector:
-        return np.array([
-            float(Statevector.from_instruction(b).probabilities([0])[1])  # [0]=qubit index; [1]=P(qubit 0=|1>)
-            for b in bound
-        ])
+        return np.array(
+            [
+                float(
+                    Statevector.from_instruction(b).probabilities([0])[1]
+                )  # [0]=qubit index; [1]=P(qubit 0=|1>)
+                for b in bound
+            ]
+        )
     # Qiskit little-endian: bitstring is q_{n-1}...q_1 q_0, so k[-1] is qubit 0.
     if cfg.model.backend.ibm_backend is not None:
         result = _ibm_sampler.run(bound, shots=cfg.model.backend.nm).result()
         values = []
         for i in range(len(bound)):
             counts = result[i].data.meas.get_counts()
-            total  = sum(counts.values())
-            values.append(float(sum(v for k, v in counts.items() if k[-1] == '1') / total))
+            total = sum(counts.values())
+            values.append(
+                float(sum(v for k, v in counts.items() if k[-1] == "1") / total)
+            )
         return np.array(values)
-    job    = backend.run(bound, shots=cfg.model.backend.nm)
+    job = backend.run(bound, shots=cfg.model.backend.nm)
     result = job.result()
     values = []
     for i in range(len(bound)):
         counts = result.get_counts(i)
-        total  = sum(counts.values())
-        values.append(float(sum(v for k, v in counts.items() if k[-1] == '1') / total))
+        total = sum(counts.values())
+        values.append(float(sum(v for k, v in counts.items() if k[-1] == "1") / total))
     return np.array(values)
 
 
 # --- Loss function -----------------------------------------------------------
+
 
 def compute_loss(p_values, event_labels, event_weights):
     """
@@ -512,13 +553,20 @@ def compute_loss(p_values, event_labels, event_weights):
     N is the number of events passed in (batch size or full dataset size).
     Uses sklearn log_loss for the weighted sum, then divides by N.
     """
-    N      = len(p_values)
+    N = len(p_values)
     p_clip = np.clip(p_values, 1e-7, 1 - 1e-7)
-    raw    = log_loss(event_labels, p_clip, normalize=False, sample_weight=event_weights, labels=[0, 1])
+    raw = log_loss(
+        event_labels,
+        p_clip,
+        normalize=False,
+        sample_weight=event_weights,
+        labels=[0, 1],
+    )
     return float(raw / N)
 
 
 # --- Shift rule classification ------------------------------------------------
+
 
 def gate_names_to_shift_rules(parameterized_gate_names):
     """
@@ -526,14 +574,14 @@ def gate_names_to_shift_rules(parameterized_gate_names):
     Gate names 'rx', 'ry', 'rz' map to 'two_term'; 'crx', 'cry', 'crz' to 'four_term'.
     Raises ValueError for any gate with no known rule — no silent failure.
     """
-    TWO_TERM_GATES  = {'rx', 'ry', 'rz'}
-    FOUR_TERM_GATES = {'crx', 'cry', 'crz'}
+    TWO_TERM_GATES = {"rx", "ry", "rz"}
+    FOUR_TERM_GATES = {"crx", "cry", "crz"}
     rules = []
     for name in parameterized_gate_names:
         if name in TWO_TERM_GATES:
-            rules.append('two_term')
+            rules.append("two_term")
         elif name in FOUR_TERM_GATES:
-            rules.append('four_term')
+            rules.append("four_term")
         else:
             raise ValueError(
                 f"Gate '{name}' has no known parameter-shift rule. "
@@ -545,8 +593,10 @@ def gate_names_to_shift_rules(parameterized_gate_names):
 
 # --- Batch gradient via parameter shift rule ---------------------------------
 
-def compute_batch_gradient_and_loss(batch_circuits, batch_labels, batch_weights, theta,
-                                    shift_rules):
+
+def compute_batch_gradient_and_loss(
+    batch_circuits, batch_labels, batch_weights, theta, shift_rules
+):
     """
     Compute the gradient of the batch loss w.r.t. theta and the batch loss value.
 
@@ -565,33 +615,37 @@ def compute_batch_gradient_and_loss(batch_circuits, batch_labels, batch_weights,
     Returns (gradient_array, batch_loss_scalar).
     batch_loss is the pre-step loss (computed before the Adam update).
     """
-    N  = len(batch_circuits)
+    N = len(batch_circuits)
     D1 = 0.5
     D2 = (np.sqrt(2) - 1) / 4
 
     # Forward pass: all batch events in one backend.run() call.
-    p_current  = _run_circuits_batch(batch_circuits, theta)
+    p_current = _run_circuits_batch(batch_circuits, theta)
     batch_loss = compute_loss(p_current, batch_labels, batch_weights)
 
     # Analytical per-event gradient of loss w.r.t. P(|1>).
     p_clip = np.clip(p_current, 1e-7, 1 - 1e-7)
-    dL_dp  = batch_weights * (
-        -batch_labels / p_clip + (1 - batch_labels) / (1 - p_clip)
-    )
+    dL_dp = batch_weights * (-batch_labels / p_clip + (1 - batch_labels) / (1 - p_clip))
 
     gradients = np.zeros(len(theta))
     for k in range(len(theta)):
-        if shift_rules[k] == 'two_term':
-            tp    = theta.copy(); tp[k] += np.pi / 2
-            tm    = theta.copy(); tm[k] -= np.pi / 2
-            p_plus   = _run_circuits_batch(batch_circuits, tp)
-            p_minus  = _run_circuits_batch(batch_circuits, tm)
+        if shift_rules[k] == "two_term":
+            tp = theta.copy()
+            tp[k] += np.pi / 2
+            tm = theta.copy()
+            tm[k] -= np.pi / 2
+            p_plus = _run_circuits_batch(batch_circuits, tp)
+            p_minus = _run_circuits_batch(batch_circuits, tm)
             dpdtheta = (p_plus - p_minus) / 2.0
-        elif shift_rules[k] == 'four_term':
-            ta_p = theta.copy(); ta_p[k] += np.pi / 2
-            ta_m = theta.copy(); ta_m[k] -= np.pi / 2
-            tb_p = theta.copy(); tb_p[k] += np.pi
-            tb_m = theta.copy(); tb_m[k] -= np.pi
+        elif shift_rules[k] == "four_term":
+            ta_p = theta.copy()
+            ta_p[k] += np.pi / 2
+            ta_m = theta.copy()
+            ta_m[k] -= np.pi / 2
+            tb_p = theta.copy()
+            tb_p[k] += np.pi
+            tb_m = theta.copy()
+            tb_m[k] -= np.pi
             f_ap = _run_circuits_batch(batch_circuits, ta_p)
             f_am = _run_circuits_batch(batch_circuits, ta_m)
             f_bp = _run_circuits_batch(batch_circuits, tb_p)
@@ -610,13 +664,14 @@ def compute_batch_gradient_and_loss(batch_circuits, batch_labels, batch_weights,
 
 # --- Global evaluation (all events) ------------------------------------------
 
+
 def evaluate_global_loss(circuit_list, event_labels, event_weights, theta, desc="Eval"):
     """
     Run all events at the given theta and return the global loss.
     Processes events in batch_size-sized chunks to limit memory usage while
     still submitting each chunk as a single backend.run() call for efficiency.
     """
-    n_total  = len(circuit_list)
+    n_total = len(circuit_list)
     p_values = np.empty(n_total)
     n_chunks = (n_total + batch_size - 1) // batch_size
     for c in tqdm(range(n_chunks), desc=f"  {desc}", unit="batch", leave=False):
@@ -628,17 +683,20 @@ def evaluate_global_loss(circuit_list, event_labels, event_weights, theta, desc=
 
 # --- Output utilities --------------------------------------------------------
 
+
 def record_final_circuit(theta_final):
     """Run the variational form once with the trained theta to record the gate sequence."""
     qc = QuantumCircuit(N_QUBITS)
     variational_form_fn(qc, np.array(theta_final), n_layers)
     gates = []
     for instr in qc.data:
-        gates.append({
-            'name'  : instr.operation.name,
-            'qubits': [qc.find_bit(q).index for q in instr.qubits],
-            'params': [float(p) for p in instr.operation.params],
-        })
+        gates.append(
+            {
+                "name": instr.operation.name,
+                "qubits": [qc.find_bit(q).index for q in instr.qubits],
+                "params": [float(p) for p in instr.operation.params],
+            }
+        )
     return gates
 
 
@@ -646,11 +704,11 @@ def generate_theta_labels(gate_sequence):
     """Return a human-readable label for each parameterised gate in the variational form."""
     out = []
     for gate in gate_sequence:
-        if gate['params']:
-            name   = gate['name']
-            qubits = gate['qubits']
-            val    = gate['params'][0]
-            if name in ('crz', 'crx', 'cry'):
+        if gate["params"]:
+            name = gate["name"]
+            qubits = gate["qubits"]
+            val = gate["params"][0]
+            if name in ("crz", "crx", "cry"):
                 out.append(
                     f"CTRL-{name[1:].upper()}(ctrl=q{qubits[0]}, tgt=q{qubits[1]}) = {val:.6f} rad"
                 )
@@ -670,8 +728,8 @@ def generate_theta_labels(gate_sequence):
 print(f"Pre-building and transpiling circuits ({N_EVENTS} events)...")
 all_circuits = []
 for x_raw in tqdm(events, desc="Building", unit="event", leave=True):
-    amplitudes   = preprocess_event(x_raw)
-    theta_params = ParameterVector('theta', N_PARAMS)
+    amplitudes = preprocess_event(x_raw)
+    theta_params = ParameterVector("theta", N_PARAMS)
     all_circuits.append((build_event_circuit(amplitudes, theta_params), theta_params))
 print()
 
@@ -679,38 +737,48 @@ print()
 _dummy_qc = QuantumCircuit(N_QUBITS)
 _, parameterized_gate_names = variational_form_fn(_dummy_qc, [0.0] * N_PARAMS, n_layers)
 shift_rules = gate_names_to_shift_rules(parameterized_gate_names)
-_n_two  = shift_rules.count('two_term')
-_n_four = shift_rules.count('four_term')
-print(f"  Shift rule classification: {_n_two} two-term (Rx/Ry/Rz), "
-      f"{_n_four} four-term (CRx/CRy/CRz)\n")
+_n_two = shift_rules.count("two_term")
+_n_four = shift_rules.count("four_term")
+print(
+    f"  Shift rule classification: {_n_two} two-term (Rx/Ry/Rz), "
+    f"{_n_four} four-term (CRx/CRy/CRz)\n"
+)
 
 # Initialise theta uniformly in [-pi, pi].
-rng_theta     = np.random.default_rng(seed=cfg.seeds.theta_init)
+rng_theta = np.random.default_rng(seed=cfg.seeds.theta_init)
 theta_current = rng_theta.uniform(-np.pi, np.pi, N_PARAMS)
 
 # Initialise sklearn AdamOptimizer.
 # params is a list containing theta_current; update_params() modifies it in place.
 optimizer = AdamOptimizer(
-    params             = [theta_current],
-    learning_rate_init = cfg.model.adam.alpha,
-    beta_1             = cfg.model.adam.beta1,
-    beta_2             = cfg.model.adam.beta2,
-    epsilon            = cfg.model.adam.epsilon,
+    params=[theta_current],
+    learning_rate_init=cfg.model.adam.alpha,
+    beta_1=cfg.model.adam.beta1,
+    beta_2=cfg.model.adam.beta2,
+    epsilon=cfg.model.adam.epsilon,
 )
 
 # Storage for checkpoint results.
-global_eval_results = {}   # key: "start" or str(n_iter) -> loss value (float)
-batch_eval_results  = {}   # key: "start" or str(n_iter) -> loss value (float)
+global_eval_results = {}  # key: "start" or str(n_iter) -> loss value (float)
+batch_eval_results = {}  # key: "start" or str(n_iter) -> loss value (float)
 
 
-n_width     = len(str(n_iter))
-label_width = max(5, n_width)   # "start" is 5 chars; ensures [n=start] aligns with [n=  N]
+n_width = len(str(n_iter))
+label_width = max(
+    5, n_width
+)  # "start" is 5 chars; ensures [n=start] aligns with [n=  N]
 
-print(f"Starting training: {n_iter} passes x {N_BATCHES_PER_ITER} batches "
-      f"x {batch_size} events/batch")
-print(f"  Simulation : {'statevector (exact)' if cfg.model.backend.use_statevector else f'Nm={cfg.model.backend.nm} shots'}")
-print(f"  Adam       : sklearn AdamOptimizer, Kingma & Ba 2014  "
-      f"alpha={cfg.model.adam.alpha}  beta1={cfg.model.adam.beta1}  beta2={cfg.model.adam.beta2}\n")
+print(
+    f"Starting training: {n_iter} passes x {N_BATCHES_PER_ITER} batches "
+    f"x {batch_size} events/batch"
+)
+print(
+    f"  Simulation : {'statevector (exact)' if cfg.model.backend.use_statevector else f'Nm={cfg.model.backend.nm} shots'}"
+)
+print(
+    f"  Adam       : sklearn AdamOptimizer, Kingma & Ba 2014  "
+    f"alpha={cfg.model.adam.alpha}  beta1={cfg.model.adam.beta1}  beta2={cfg.model.adam.beta2}\n"
+)
 
 
 # =============================================================================
@@ -728,7 +796,7 @@ if global_do_start or batch_do_start:
         _g_start = f"{loss:.6f}"
     if batch_do_start:
         # Evaluate the first batch with the initial random theta before any Adam step.
-        p_start    = _run_circuits_batch(all_circuits[:batch_size], theta_current)
+        p_start = _run_circuits_batch(all_circuits[:batch_size], theta_current)
         loss_start = compute_loss(p_start, labels[:batch_size], weights[:batch_size])
         batch_eval_results["start"] = float(loss_start)
         _b_start = f"{loss_start:.6f}"
@@ -750,27 +818,33 @@ for current_iter in range(1, n_iter + 1):
 
     # Optionally reshuffle the event order at the start of each pass after the first.
     if cfg.data.reshuffle_between_passes and current_iter > 1:
-        rng_reshuffle = np.random.default_rng(seed=cfg.seeds.pass_reshuffle + current_iter)
-        perm          = rng_reshuffle.permutation(N_EVENTS)
+        rng_reshuffle = np.random.default_rng(
+            seed=cfg.seeds.pass_reshuffle + current_iter
+        )
+        perm = rng_reshuffle.permutation(N_EVENTS)
         pass_circuits = [all_circuits[i] for i in perm]
-        pass_labels   = labels[perm]
-        pass_weights  = weights[perm]
+        pass_labels = labels[perm]
+        pass_weights = weights[perm]
     else:
         pass_circuits = all_circuits
-        pass_labels   = labels
-        pass_weights  = weights
+        pass_labels = labels
+        pass_weights = weights
 
     # Sweep through all batches for this pass, with a per-batch progress bar.
-    with tqdm(range(N_BATCHES_PER_ITER),
-              desc=f"  Pass {current_iter:{n_width}d}/{n_iter}",
-              unit="batch", leave=False, position=1) as batch_bar:
+    with tqdm(
+        range(N_BATCHES_PER_ITER),
+        desc=f"  Pass {current_iter:{n_width}d}/{n_iter}",
+        unit="batch",
+        leave=False,
+        position=1,
+    ) as batch_bar:
         for batch_idx in batch_bar:
             start = batch_idx * batch_size
-            end   = start + batch_size
+            end = start + batch_size
 
             b_circuits = pass_circuits[start:end]
-            b_labels   = pass_labels[start:end]
-            b_weights  = pass_weights[start:end]
+            b_labels = pass_labels[start:end]
+            b_weights = pass_weights[start:end]
 
             # Compute gradient and pre-step batch loss via parameter shift rule.
             grad, current_batch_loss = compute_batch_gradient_and_loss(
@@ -795,8 +869,11 @@ for current_iter in range(1, n_iter + 1):
             _b_str = f"{last_batch_loss:.6f}"
         if current_iter in global_ckpt_set:
             g_loss = evaluate_global_loss(
-                all_circuits, labels, weights, theta_current,
-                desc=f"  Global [n={current_iter:{n_width}d}]"
+                all_circuits,
+                labels,
+                weights,
+                theta_current,
+                desc=f"  Global [n={current_iter:{n_width}d}]",
             )
             global_eval_results[str(current_iter)] = float(g_loss)
             _g_str = f"{g_loss:.6f}"
@@ -805,9 +882,9 @@ for current_iter in range(1, n_iter + 1):
         )
 
 pass_bar.close()
-theta_final   = theta_current.tolist()
+theta_final = theta_current.tolist()
 gate_sequence = record_final_circuit(theta_final)
-theta_labels  = generate_theta_labels(gate_sequence)
+theta_labels = generate_theta_labels(gate_sequence)
 
 
 # =============================================================================
@@ -816,9 +893,11 @@ theta_labels  = generate_theta_labels(gate_sequence)
 # Writes the results JSON and a standalone classifier script to a timestamped
 # folder named after the circuit, layers, training settings, and run time.
 
-timestamp  = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-_base_name = (f"circuit{circuit_number}_layers{n_layers}_"
-              f"{n_iter}iter_batch{batch_size}_{timestamp}")
+timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+_base_name = (
+    f"circuit{circuit_number}_layers{n_layers}_"
+    f"{n_iter}iter_batch{batch_size}_{timestamp}"
+)
 output_dir = f"{cfg.data.run_tag}_{_base_name}" if cfg.data.run_tag else _base_name
 os.makedirs(output_dir, exist_ok=True)
 print(f"\nSaving outputs to: {output_dir}/")
@@ -829,55 +908,55 @@ json_path = os.path.join(output_dir, "results.json")
 
 results = {
     "run_info": {
-        "circuits_library"        : circuits_name_only,
-        "signal_file"             : cfg.data.sig_path.name,
-        "background_file"         : cfg.data.bkg_path.name,
-        "data_folder"             : cfg.data.sig_path.resolve().parent.name,
-        "timestamp"               : timestamp,
-        "n_signal"                : len(s_feats),
-        "n_background"            : len(b_feats),
-        "n_events_loaded"         : len(all_feats),
-        "n_events_used"           : N_EVENTS,
-        "max_events_limit"        : max_events,
-        "BALANCE_CLASSES"         : cfg.data.balance_classes,
-        "EVENT_ORDER"             : cfg.data.event_order,
-        "DATA_SHUFFLE_SEED"       : cfg.seeds.data_shuffle,
+        "circuits_library": circuits_name_only,
+        "signal_file": cfg.data.sig_path.name,
+        "background_file": cfg.data.bkg_path.name,
+        "data_folder": cfg.data.sig_path.resolve().parent.name,
+        "timestamp": timestamp,
+        "n_signal": len(s_feats),
+        "n_background": len(b_feats),
+        "n_events_loaded": len(all_feats),
+        "n_events_used": N_EVENTS,
+        "max_events_limit": max_events,
+        "BALANCE_CLASSES": cfg.data.balance_classes,
+        "EVENT_ORDER": cfg.data.event_order,
+        "DATA_SHUFFLE_SEED": cfg.seeds.data_shuffle,
         "RESHUFFLE_BETWEEN_PASSES": cfg.data.reshuffle_between_passes,
-        "PASS_RESHUFFLE_SEED"     : cfg.seeds.pass_reshuffle,
-        "N_ITER"                  : n_iter,
-        "BATCH_SIZE_IS_FRACTION"  : batch_size_is_fraction,
-        "BATCH_SIZE"              : batch_size,
-        "N_BATCHES_PER_ITER"      : N_BATCHES_PER_ITER,
-        "ALPHA"                   : cfg.model.adam.alpha,
-        "BETA1"                   : cfg.model.adam.beta1,
-        "BETA2"                   : cfg.model.adam.beta2,
-        "EPSILON"                 : cfg.model.adam.epsilon,
-        "adam_formulation"        : "sklearn_AdamOptimizer_Kingma_Ba_2014",
-        "THETA_INIT_SEED"         : cfg.seeds.theta_init,
-        "GLOBAL_EVAL_CHECKPOINTS" : sorted(global_ckpt_set),
-        "GLOBAL_EVAL_STEP"        : cfg.model.checkpoints.global_step,
-        "BATCH_EVAL_CHECKPOINTS"  : sorted(batch_ckpt_set),
-        "BATCH_EVAL_STEP"         : cfg.model.checkpoints.batch_step,
-        "USE_STATEVECTOR"         : cfg.model.backend.use_statevector,
-        "SIMULATOR_METHOD"        : cfg.model.backend.simulator_method,
-        "Nm"                      : cfg.model.backend.nm,
-        "SIM_SEED"                : cfg.seeds.simulator,
-        "IBM_BACKEND"             : cfg.model.backend.ibm_backend,
-        "RUN_TAG"                 : cfg.data.run_tag,
+        "PASS_RESHUFFLE_SEED": cfg.seeds.pass_reshuffle,
+        "N_ITER": n_iter,
+        "BATCH_SIZE_IS_FRACTION": batch_size_is_fraction,
+        "BATCH_SIZE": batch_size,
+        "N_BATCHES_PER_ITER": N_BATCHES_PER_ITER,
+        "ALPHA": cfg.model.adam.alpha,
+        "BETA1": cfg.model.adam.beta1,
+        "BETA2": cfg.model.adam.beta2,
+        "EPSILON": cfg.model.adam.epsilon,
+        "adam_formulation": "sklearn_AdamOptimizer_Kingma_Ba_2014",
+        "THETA_INIT_SEED": cfg.seeds.theta_init,
+        "GLOBAL_EVAL_CHECKPOINTS": sorted(global_ckpt_set),
+        "GLOBAL_EVAL_STEP": cfg.model.checkpoints.global_step,
+        "BATCH_EVAL_CHECKPOINTS": sorted(batch_ckpt_set),
+        "BATCH_EVAL_STEP": cfg.model.checkpoints.batch_step,
+        "USE_STATEVECTOR": cfg.model.backend.use_statevector,
+        "SIMULATOR_METHOD": cfg.model.backend.simulator_method,
+        "Nm": cfg.model.backend.nm,
+        "SIM_SEED": cfg.seeds.simulator,
+        "IBM_BACKEND": cfg.model.backend.ibm_backend,
+        "RUN_TAG": cfg.data.run_tag,
     },
     "circuit": {
-        "circuit_number"     : circuit_number,
+        "circuit_number": circuit_number,
         "circuit_description": circuit_description,
-        "n_layers"           : n_layers,
-        "fixed_params"       : fixed_params,
-        "layer_params"       : layer_params,
-        "total_params"       : N_PARAMS,
+        "n_layers": n_layers,
+        "fixed_params": fixed_params,
+        "layer_params": layer_params,
+        "total_params": N_PARAMS,
     },
     "output": {
-        "theta_final"            : theta_final,
-        "theta_labels"           : theta_labels,
+        "theta_final": theta_final,
+        "theta_labels": theta_labels,
         "global_eval_checkpoints": global_eval_results,
-        "batch_eval_checkpoints" : batch_eval_results,
+        "batch_eval_checkpoints": batch_eval_results,
     },
 }
 
@@ -888,18 +967,19 @@ print(f"  [1/2] Results JSON : {json_path}")
 
 # --- Standalone classifier script --------------------------------------------
 
+
 def gate_to_qiskit_line(gate):
     """Convert a recorded gate dict to one line of Qiskit Python code."""
-    name   = gate['name']
-    qubits = gate['qubits']
-    params = gate['params']
-    if name == 'cx':
+    name = gate["name"]
+    qubits = gate["qubits"]
+    params = gate["params"]
+    if name == "cx":
         return f"    qc.cx({qubits[0]}, {qubits[1]})"
-    elif name == 'cz':
+    elif name == "cz":
         return f"    qc.cz({qubits[0]}, {qubits[1]})"
-    elif name == 'h':
+    elif name == "h":
         return f"    qc.h({qubits[0]})"
-    elif name in ('crz', 'crx', 'cry') and params:
+    elif name in ("crz", "crx", "cry") and params:
         return f"    qc.{name}({params[0]:.10f}, {qubits[0]}, {qubits[1]})"
     elif params:
         return f"    qc.{name}({params[0]:.10f}, {qubits[0]})"
@@ -907,10 +987,10 @@ def gate_to_qiskit_line(gate):
         return f"    # Unrecognised gate {name} on {qubits}"
 
 
-gate_lines     = "\n".join(gate_to_qiskit_line(g) for g in gate_sequence)
+gate_lines = "\n".join(gate_to_qiskit_line(g) for g in gate_sequence)
 # Add one extra level of indentation so gate_lines land inside classify() after textwrap.dedent.
 gate_lines_cls = textwrap.indent(gate_lines, "    ")
-theta_literal  = repr(theta_final)
+theta_literal = repr(theta_final)
 labels_literal = repr(theta_labels)
 
 # Human-readable simulation label for the header comment.
@@ -1043,20 +1123,32 @@ print(f"\nTraining complete.")
 print(f"  Circuit      : [{circuit_number}] {circuit_description}")
 print(f"  Layers       : {n_layers}  |  Parameters: {N_PARAMS}")
 print(f"  Events       : {N_EVENTS} used of {len(all_feats)} loaded")
-print(f"  N_iter       : {n_iter}  |  Batches/iter: {N_BATCHES_PER_ITER}  |  Batch size: {batch_size}")
+print(
+    f"  N_iter       : {n_iter}  |  Batches/iter: {N_BATCHES_PER_ITER}  |  Batch size: {batch_size}"
+)
 print(f"  theta_final  : {np.round(theta_final, 4)}")
 if global_eval_results:
     last_g = sorted((k for k in global_eval_results if k != "start"), key=int)
     if last_g:
-        print(f"  Last global eval (n={last_g[-1]}): loss={global_eval_results[last_g[-1]]:.6f}")
+        print(
+            f"  Last global eval (n={last_g[-1]}): loss={global_eval_results[last_g[-1]]:.6f}"
+        )
 if batch_eval_results:
     last_b = sorted((k for k in batch_eval_results if k != "start"), key=int)
     if last_b:
-        print(f"  Last batch  eval (n={last_b[-1]}): loss={batch_eval_results[last_b[-1]]:.6f}")
+        print(
+            f"  Last batch  eval (n={last_b[-1]}): loss={batch_eval_results[last_b[-1]]:.6f}"
+        )
 print(f"  Output folder: {output_dir}/")
 
-_elapsed  = time.time() - _t_start
-_sim_info = 'statevector (exact)' if cfg.model.backend.use_statevector else f'Nm={cfg.model.backend.nm} shots'
+_elapsed = time.time() - _t_start
+_sim_info = (
+    "statevector (exact)"
+    if cfg.model.backend.use_statevector
+    else f"Nm={cfg.model.backend.nm} shots"
+)
 print(f"\n  Elapsed time : {_elapsed:.1f} s  ({_elapsed/60:.1f} min)")
-print(f"  Per event    : {_elapsed/N_EVENTS:.3f} s/event  "
-      f"(N_iter={n_iter}, {_sim_info}, {N_EVENTS} events)")
+print(
+    f"  Per event    : {_elapsed/N_EVENTS:.3f} s/event  "
+    f"(N_iter={n_iter}, {_sim_info}, {N_EVENTS} events)"
+)
