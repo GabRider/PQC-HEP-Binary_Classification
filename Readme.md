@@ -67,7 +67,7 @@ A TOML file has three parts; every key is optional. See
 | `[model.circuit]`     | circuits library, circuit number, number of layers            |
 | `[model.training]`    | number of passes (`n_iter`), batch size                       |
 | `[model.adam]`        | Adam optimiser parameters                                     |
-| `[model.checkpoints]` | when the loss is recorded                                     |
+| `[model.evaluation]`  | passes where the loss is measured                             |
 | `[model.backend]`     | statevector or shots, number of shots, IBM backend            |
 | `[seeds]`             | the four random seeds                                         |
 

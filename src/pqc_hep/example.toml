@@ -24,11 +24,11 @@ beta1 = 0.9
 beta2 = 0.999
 epsilon = 1e-8
 
-[model.checkpoints]
-# When to record the loss: integers in [1, n_iter], "start" or "end".
-global_checkpoints = ["start", "end"]
-batch_checkpoints = ["start", "end"]
-# global_step = 5                    # auto-fill checkpoints every N passes; omit = off
+[model.evaluation]
+# Passes where the loss is measured: integers in [1, n_iter], "start" or "end".
+global_at = ["start", "end"]         # loss on all the events
+batch_at = ["start", "end"]          # loss of the pass's last batch
+# global_step = 5                    # also measure every N passes; omit = off
 # batch_step = 5
 
 [model.backend]

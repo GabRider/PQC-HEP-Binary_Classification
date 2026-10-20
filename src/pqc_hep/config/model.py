@@ -1,4 +1,4 @@
-"""[model] table and its sub-tables: circuit, training, adam, checkpoints, backend."""
+"""[model] table and its sub-tables: circuit, training, adam, evaluation, backend."""
 
 from typing import Annotated, Literal
 
@@ -6,15 +6,15 @@ from pydantic import Field, PositiveInt, model_validator
 
 from pqc_hep.config.base import Section
 
-Checkpoint = PositiveInt | Literal["start", "end"]
+EvalPoint = PositiveInt | Literal["start", "end"]
 Fraction = Annotated[float, Field(gt=0, le=1)]
 
 
-def _check_checkpoints(name, values, step, n_iter):
+def _check_evaluation(name, values, step, n_iter):
     if any(isinstance(v, int) and v > n_iter for v in values):
-        raise ValueError(f"{name}_checkpoints values must be <= n_iter={n_iter}.")
+        raise ValueError(f"{name}_at values must be <= n_iter={n_iter}.")
     if step is not None and set(values) <= {"start"}:
-        raise ValueError(f"{name}_step needs a number or 'end' in {name}_checkpoints.")
+        raise ValueError(f"{name}_step needs a number or 'end' in {name}_at.")
 
 
 class CircuitConfig(Section):
@@ -34,9 +34,9 @@ class AdamConfig(Section):
     epsilon: float = Field(1e-8, gt=0)
 
 
-class CheckpointsConfig(Section):
-    global_checkpoints: list[Checkpoint] = ["start", "end"]
-    batch_checkpoints: list[Checkpoint] = ["start", "end"]
+class EvaluationConfig(Section):
+    global_at: list[EvalPoint] = ["start", "end"]
+    batch_at: list[EvalPoint] = ["start", "end"]
     global_step: PositiveInt | None = None  # auto-fill interval
     batch_step: PositiveInt | None = None
 
@@ -60,14 +60,14 @@ class ModelConfig(Section):
     circuit: CircuitConfig = CircuitConfig()
     training: TrainingConfig = TrainingConfig()
     adam: AdamConfig = AdamConfig()
-    checkpoints: CheckpointsConfig = CheckpointsConfig()
+    evaluation: EvaluationConfig = EvaluationConfig()
     backend: BackendConfig = BackendConfig()
 
     @model_validator(mode="after")
-    def _checkpoints_fit_n_iter(self):
-        """Check the evaluation checkpoints against n_iter.
+    def _evaluation_fits_n_iter(self):
+        """Check the evaluation passes against n_iter.
 
-        A checkpoint is a training pass where the loss is measured, printed and
+        An evaluation is a training pass where the loss is measured, printed and
         saved in results.json. There are two kinds of measure:
         - global: loss on all the events with the current theta. Exact, but every
           circuit runs again.
@@ -76,7 +76,7 @@ class ModelConfig(Section):
 
         Each list takes pass numbers, "start" (before the first Adam step, with the
         random initial theta) and "end" (= n_iter). The step fills the passes
-        between the checkpoints at a regular interval. Example with n_iter = 50:
+        between the listed passes at a regular interval. Example with n_iter = 50:
             ["start", "end"]         -> {50}, plus start
             [10, 20, "end"]          -> {10, 20, 50}
             ["end"], step = 10       -> {10, 20, 30, 40, 50}
@@ -85,7 +85,7 @@ class ModelConfig(Section):
         A pass number above n_iter is never reached, and a step needs a pass
         number or "end" to fill up to: both are errors.
         """
-        ckpt, n_iter = self.checkpoints, self.training.n_iter
-        _check_checkpoints("global", ckpt.global_checkpoints, ckpt.global_step, n_iter)
-        _check_checkpoints("batch", ckpt.batch_checkpoints, ckpt.batch_step, n_iter)
+        ev, n_iter = self.evaluation, self.training.n_iter
+        _check_evaluation("global", ev.global_at, ev.global_step, n_iter)
+        _check_evaluation("batch", ev.batch_at, ev.batch_step, n_iter)
         return self

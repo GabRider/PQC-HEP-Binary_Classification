@@ -16,7 +16,6 @@ import json
 import datetime
 import shutil
 import numpy as np
-from sklearn.metrics import log_loss
 from sklearn.neural_network._stochastic_optimizers import AdamOptimizer
 
 from tqdm import tqdm
@@ -31,8 +30,17 @@ from pqc_hep.data import (
     normalise_weights,
     order_events,
     select_events,
+    to_amplitudes,
 )
-from pqc_hep.quantum import N_QUBITS, QModel
+from pqc_hep.quantum import N_QUBITS, QModel, make_backend
+from pqc_hep.training import (
+    EvalSchedule,
+    Trainer,
+    TrainingSet,
+    WeightedBCE,
+    measure_loss,
+    resolve_batch_size,
+)
 
 _t_start = time.time()
 
@@ -41,7 +49,7 @@ _t_start = time.time()
 # INPUT HANDLING
 # =============================================================================
 # Loads the TOML run configuration, resolves data file paths, loads the
-# circuits library, and prepares evaluation checkpoints.
+# circuits library, and prepares the evaluation schedule.
 
 parser = argparse.ArgumentParser(
     description="PQC mini-batch training pipeline for HEP binary classification (Qiskit)."
@@ -74,27 +82,7 @@ shift_rules = circuit.shift_rules(n_layers)  # one per theta value
 N_PARAMS = len(shift_rules)
 
 
-# Parse evaluation checkpoints.
-
-
-def parse_checkpoints(raw, n_iter, step):
-    """Passes where to evaluate ("end" = n_iter), and whether "start" is requested.
-
-    The values are checked by the config (ModelConfig._checkpoints_fit_n_iter).
-    """
-    ckpts = {n_iter if v == "end" else v for v in raw if v != "start"}
-    if step is not None:
-        low = min(ckpts) if len(ckpts) >= 2 else step
-        ckpts.update(range(low, max(ckpts) + 1, step))
-    return ckpts, "start" in raw
-
-
-global_ckpt_set, global_do_start = parse_checkpoints(
-    cfg.model.checkpoints.global_checkpoints, n_iter, cfg.model.checkpoints.global_step
-)
-batch_ckpt_set, batch_do_start = parse_checkpoints(
-    cfg.model.checkpoints.batch_checkpoints, n_iter, cfg.model.checkpoints.batch_step
-)
+eval_schedule = EvalSchedule.from_config(cfg.model.evaluation, n_iter)
 
 
 # Print effective configuration.
@@ -108,8 +96,8 @@ print(f"""
 [extra]
   circuit                   : [{circuit_number}] {circuit.description}
   parameters                : {N_PARAMS}
-  global_eval_at            : start={global_do_start}, n_iter={sorted(global_ckpt_set)}
-  batch_eval_at             : start={batch_do_start}, n_iter={sorted(batch_ckpt_set)}
+  global_eval_at            : start={eval_schedule.global_start}, n_iter={sorted(eval_schedule.global_passes)}
+  batch_eval_at             : start={eval_schedule.batch_start}, n_iter={sorted(eval_schedule.batch_passes)}
 {_rule}
 """)
 
@@ -139,24 +127,15 @@ print(f"  Loaded : {N_LOADED} events ({len(sig)} signal, {len(bkg)} background)"
 print(f"  Using  : {N_EVENTS} events ({n_sig} signal, {n_bkg} background)")
 print(f"  Weight normalisation: sum(w_S) = sum(w_B) = {n_bkg}")
 
-# Resolve BATCH_SIZE fraction to an integer now that N_EVENTS is known.
+try:
+    batch_size = resolve_batch_size(batch_size, N_EVENTS)
+except ValueError as e:
+    print(f"Error: {e}")
+    sys.exit(1)
 if batch_size_is_fraction:
-    _resolved = int(round(batch_size * N_EVENTS))
-    if _resolved < 1:
-        print(
-            f"Error: batch_size={batch_size} resolves to {_resolved} events for {N_EVENTS} total, "
-            f"which is < 1. Use a larger fraction."
-        )
-        sys.exit(1)
-    batch_size = _resolved
     print(
         f"  Batch size (resolved) : {batch_size}  (= {batch_size/N_EVENTS*100:.1f}% of {N_EVENTS} events)"
     )
-
-# Validate that batch_size evenly divides the event count.
-if N_EVENTS % batch_size != 0:
-    print(f"Error: batch_size={batch_size} does not divide {N_EVENTS} events.")
-    sys.exit(1)
 
 N_BATCHES_PER_ITER = N_EVENTS // batch_size
 print(f"  Batches per N_iter : {N_BATCHES_PER_ITER}  (batch_size={batch_size})\n")
@@ -165,123 +144,21 @@ print(f"  Batches per N_iter : {N_BATCHES_PER_ITER}  (batch_size={batch_size})\n
 # =============================================================================
 # QUANTUM PIPELINE
 # =============================================================================
-# The circuits and their execution are in quantum.py (QModel); this section
-# keeps the loss and the gradient via the parameter shift rule.
+# The circuits and their execution are in quantum.py (QModel); the loss and the
+# gradient via the parameter shift rule are in training.py.
 
 # --- Backend -----------------------------------------------------------------
 # Local AerSimulator, or a real IBM Quantum computer when ibm_backend is set.
 
 try:
-    qmodel = QModel(circuit, n_layers, cfg.model.backend, cfg.seeds.simulator)
+    backend, sampler = make_backend(cfg.model.backend, cfg.seeds.simulator)
 except ImportError as e:
     print(f"Error: {e}")
     sys.exit(1)
 if cfg.model.backend.ibm_backend is not None:
     print(f"  Using real IBM Quantum hardware: {cfg.model.backend.ibm_backend}")
-
-
-# --- Loss function -----------------------------------------------------------
-
-
-def compute_loss(p_values, event_labels, event_weights):
-    """
-    Weighted binary cross-entropy over a set of events:
-      L_K = (1/N) * sum_i { w_i * [-z_i*ln(y_i) - (1-z_i)*ln(1-y_i)] }
-    N is the number of events passed in (batch size or full dataset size).
-    Uses sklearn log_loss for the weighted sum, then divides by N.
-    """
-    N = len(p_values)
-    p_clip = np.clip(p_values, 1e-7, 1 - 1e-7)
-    raw = log_loss(
-        event_labels,
-        p_clip,
-        normalize=False,
-        sample_weight=event_weights,
-        labels=[0, 1],
-    )
-    return float(raw / N)
-
-
-# --- Batch gradient via parameter shift rule ---------------------------------
-
-
-def compute_batch_gradient_and_loss(
-    batch_circuits, batch_labels, batch_weights, theta, shift_rules
-):
-    """
-    Compute the gradient of the batch loss w.r.t. theta and the batch loss value.
-
-    Steps:
-      1. Forward pass: run all batch circuits at current theta -> p_current[j].
-         The batch loss is computed here for free (no extra circuit runs needed).
-      2. Per-event analytical gradient of loss w.r.t. P(|1>):
-           dL_j/dp_j = w_j * (-z_j / p_j  +  (1-z_j) / (1-p_j))
-      3. Per theta component k the correct exact shift rule is applied:
-           two_term  : grad[k] = (1/N) * dot(dL_dp, (p+ - p-) / 2)
-                       p± evaluated at theta ± π/2.
-           four_term : grad[k] = (1/N) * dot(dL_dp, d1*(fa+−fa−) − d2*(fb+−fb−))
-                       a-shifts ±π/2, b-shifts ±π, d1=1/2, d2=(√2−1)/4.
-      Total circuit evaluations: (1 + 2*n_two + 4*n_four) * batch_size.
-
-    Returns (gradient_array, batch_loss_scalar).
-    batch_loss is the pre-step loss (computed before the Adam update).
-    """
-    N = len(batch_circuits)
-    D1 = 0.5
-    D2 = (np.sqrt(2) - 1) / 4
-
-    # Forward pass: all batch events in one backend.run() call.
-    p_current = qmodel.run(batch_circuits, theta)
-    batch_loss = compute_loss(p_current, batch_labels, batch_weights)
-
-    # Analytical per-event gradient of loss w.r.t. P(|1>).
-    p_clip = np.clip(p_current, 1e-7, 1 - 1e-7)
-    dL_dp = batch_weights * (-batch_labels / p_clip + (1 - batch_labels) / (1 - p_clip))
-
-    def p_shifted(k, shift):
-        """P(q0=1) of the batch with only theta[k] shifted."""
-        t = theta.copy()
-        t[k] += shift
-        return qmodel.run(batch_circuits, t)
-
-    # Each run is seeded from seed_simulator and the circuit's position in the run,
-    # so grouping several shifts into one run would change the shot results.
-    gradients = np.zeros(len(theta))
-    for k, rule in enumerate(shift_rules):
-        if rule == ShiftRule.TWO_TERM:
-            # RX, RY, RZ: the output is a sine of theta[k] with a single
-            # frequency, so two runs at ±π/2 give the exact derivative.
-            dpdtheta = (p_shifted(k, np.pi / 2) - p_shifted(k, -np.pi / 2)) / 2.0
-        else:  # FOUR_TERM
-            # CRX, CRZ: the rotation only acts when the control is |1>, so the
-            # output mixes two frequencies of theta[k]. Two more runs at ±π are
-            # needed to separate them.
-            dpdtheta = D1 * (p_shifted(k, np.pi / 2) - p_shifted(k, -np.pi / 2)) - D2 * (
-                p_shifted(k, np.pi) - p_shifted(k, -np.pi)
-            )
-
-        gradients[k] = float(np.dot(dL_dp, dpdtheta) / N)
-
-    return gradients, batch_loss
-
-
-# --- Global evaluation (all events) ------------------------------------------
-
-
-def evaluate_global_loss(circuit_list, event_labels, event_weights, theta, desc="Eval"):
-    """
-    Run all events at the given theta and return the global loss.
-    Processes events in batch_size-sized chunks to limit memory usage while
-    still submitting each chunk as a single backend.run() call for efficiency.
-    """
-    n_total = len(circuit_list)
-    p_values = np.empty(n_total)
-    n_chunks = (n_total + batch_size - 1) // batch_size
-    for c in tqdm(range(n_chunks), desc=f"  {desc}", unit="batch", leave=False):
-        s = c * batch_size
-        e = min(s + batch_size, n_total)
-        p_values[s:e] = qmodel.run(circuit_list[s:e], theta)
-    return compute_loss(p_values, event_labels, event_weights)
+shots = None if cfg.model.backend.use_statevector else cfg.model.backend.nm
+qmodel = QModel(circuit, n_layers, backend, shots, sampler, preprocess=to_amplitudes)
 
 
 # --- Output utilities --------------------------------------------------------
@@ -323,9 +200,6 @@ def generate_theta_labels(gate_sequence):
 # =============================================================================
 # TRAINING SETUP
 # =============================================================================
-# Pre-builds and transpiles one full circuit per event (embedding + variational
-# form), initialises theta, and creates the sklearn Adam optimiser.
-
 # Build and transpile one full circuit per event (embedding + variational form).
 # All N_iter passes reuse these transpiled circuits by binding parameter values.
 print(f"Building and transpiling circuits ({N_EVENTS} events)...")
@@ -339,21 +213,7 @@ print(
     f"{_n_four} four-term (CRx/CRy/CRz)\n"
 )
 
-# Initialise theta uniformly in [-pi, pi].
-rng_theta = np.random.default_rng(seed=cfg.seeds.theta_init)
-theta_current = rng_theta.uniform(-np.pi, np.pi, N_PARAMS)
-
-# Initialise sklearn AdamOptimizer.
-# params is a list containing theta_current; update_params() modifies it in place.
-optimizer = AdamOptimizer(
-    params=[theta_current],
-    learning_rate_init=cfg.model.adam.alpha,
-    beta_1=cfg.model.adam.beta1,
-    beta_2=cfg.model.adam.beta2,
-    epsilon=cfg.model.adam.epsilon,
-)
-
-# Storage for checkpoint results.
+# Evaluation losses, filled by record_eval().
 global_eval_results = {}  # key: "start" or str(n_iter) -> loss value (float)
 batch_eval_results = {}  # key: "start" or str(n_iter) -> loss value (float)
 
@@ -364,9 +224,9 @@ label_width = max(
 )  # "start" is 5 chars; ensures [n=start] aligns with [n=  N]
 
 
-def record_checkpoint(key, batch_loss, global_loss):
-    """Save the losses of one checkpoint ("start" or the pass number) and print
-    them on one line; None = not measured at this checkpoint."""
+def record_eval(key, batch_loss, global_loss):
+    """Save the losses of one evaluation ("start" or the pass number) and print
+    them on one line; None = not measured at this evaluation."""
     if batch_loss is not None:
         batch_eval_results[key] = float(batch_loss)
     if global_loss is not None:
@@ -394,97 +254,49 @@ print(
 
 
 # =============================================================================
-# PRE-TRAINING EVALUATIONS  ("start" checkpoints, before any Adam step)
-# =============================================================================
-
-if global_do_start or batch_do_start:
-    g_loss = b_loss = None
-    if global_do_start:
-        g_loss = evaluate_global_loss(
-            all_circuits,
-            events.labels,
-            events.weights,
-            theta_current,
-            desc="  Global [start]",
-        )
-    if batch_do_start:
-        # First batch with the initial random theta, before any Adam step.
-        first = events[:batch_size]
-        p_start = qmodel.run(all_circuits[:batch_size], theta_current)
-        b_loss = compute_loss(p_start, first.labels, first.weights)
-    record_checkpoint("start", b_loss, g_loss)
-    print()
-
-
-# =============================================================================
 # TRAINING LOOP
 # =============================================================================
-# Runs N_iter passes over all events. Each pass sweeps through N_BATCHES_PER_ITER
-# mini-batches, computing one batch gradient and taking one Adam step per batch.
+# The config chooses the components; the Trainer only uses them.
 
-last_batch_loss = None
+# Initial theta uniformly in [-pi, pi].
+theta0 = np.random.default_rng(seed=cfg.seeds.theta_init).uniform(-np.pi, np.pi, N_PARAMS)
+optimizer = AdamOptimizer(
+    params=[theta0],
+    learning_rate_init=cfg.model.adam.alpha,
+    beta_1=cfg.model.adam.beta1,
+    beta_2=cfg.model.adam.beta2,
+    epsilon=cfg.model.adam.epsilon,
+)
+loss = WeightedBCE()
+trainer = Trainer(qmodel, loss, optimizer, theta0, batch_size)
+data = TrainingSet(events, all_circuits)
 
-pass_bar = tqdm(total=n_iter, desc="Training", unit="pass", position=0, leave=True)
+# "start" evaluations: initial random theta, before any optimizer step.
+if eval_schedule.batch_start or eval_schedule.global_start:
+    record_eval(
+        "start",
+        measure_loss(qmodel, data[:batch_size], trainer.theta, loss, batch_size) if eval_schedule.batch_start else None,
+        measure_loss(qmodel, data, trainer.theta, loss, batch_size) if eval_schedule.global_start else None,
+    )
+    print()
 
-for current_iter in range(1, n_iter + 1):
-
-    # Optionally reshuffle the event order at the start of each pass after the first.
-    if cfg.data.reshuffle_between_passes and current_iter > 1:
-        rng_reshuffle = np.random.default_rng(
-            seed=cfg.seeds.pass_reshuffle + current_iter
-        )
-        perm = rng_reshuffle.permutation(N_EVENTS)
-        pass_circuits = [all_circuits[i] for i in perm]
-        pass_events = events[perm]
-    else:
-        pass_circuits = all_circuits
-        pass_events = events
-
-    # Sweep through all batches for this pass, with a per-batch progress bar.
-    with tqdm(
-        range(N_BATCHES_PER_ITER),
-        desc=f"  Pass {current_iter:{n_width}d}/{n_iter}",
-        unit="batch",
-        leave=False,
-        position=1,
-    ) as batch_bar:
-        for batch_idx in batch_bar:
-            start = batch_idx * batch_size
-            end = start + batch_size
-
-            b_circuits = pass_circuits[start:end]
-            batch = pass_events[start:end]
-
-            # Compute gradient and pre-step batch loss via parameter shift rule.
-            grad, current_batch_loss = compute_batch_gradient_and_loss(
-                b_circuits, batch.labels, batch.weights, theta_current, shift_rules
+with tqdm(total=n_iter * N_BATCHES_PER_ITER, unit="batch") as bar:
+    for n in range(1, n_iter + 1):
+        bar.set_description(f"Pass {n:{n_width}d}/{n_iter}")
+        reshuffle = cfg.data.reshuffle_between_passes and n > 1
+        seed = cfg.seeds.pass_reshuffle + n if reshuffle else None
+        for batch in trainer.batches(data, seed):
+            last_batch_loss = trainer.step(batch)
+            bar.update()
+        # batch evaluation: loss of the pass's last batch, before its step;
+        # global evaluation: loss on all the events.
+        if n in eval_schedule.batch_passes or n in eval_schedule.global_passes:
+            record_eval(
+                str(n),
+                last_batch_loss if n in eval_schedule.batch_passes else None,
+                measure_loss(qmodel, data, trainer.theta, loss, batch_size) if n in eval_schedule.global_passes else None,
             )
-
-            # One Adam step: sklearn AdamOptimizer updates theta_current in place.
-            optimizer.update_params([theta_current], [grad])
-
-            # Track the last batch loss of this pass for BATCH_EVAL_CHECKPOINTS.
-            last_batch_loss = current_batch_loss
-
-    pass_bar.update(1)
-
-    # Eval checkpoints: batch (last batch pre-step loss) and/or global (all events).
-    # Both are shown on the same line for easy comparison.
-    if current_iter in batch_ckpt_set or current_iter in global_ckpt_set:
-        b_loss = last_batch_loss if current_iter in batch_ckpt_set else None
-        g_loss = None
-        if current_iter in global_ckpt_set:
-            g_loss = evaluate_global_loss(
-                all_circuits,
-                events.labels,
-                events.weights,
-                theta_current,
-                desc=f"  Global [n={current_iter:{n_width}d}]",
-            )
-        record_checkpoint(str(current_iter), b_loss, g_loss)
-
-pass_bar.close()
-theta_final = theta_current.tolist()
+theta_final = trainer.theta.tolist()
 gate_sequence = record_final_circuit(theta_final)
 theta_labels = generate_theta_labels(gate_sequence)
 
@@ -534,10 +346,10 @@ results = {
         "EPSILON": cfg.model.adam.epsilon,
         "adam_formulation": "sklearn_AdamOptimizer_Kingma_Ba_2014",
         "THETA_INIT_SEED": cfg.seeds.theta_init,
-        "GLOBAL_EVAL_CHECKPOINTS": sorted(global_ckpt_set),
-        "GLOBAL_EVAL_STEP": cfg.model.checkpoints.global_step,
-        "BATCH_EVAL_CHECKPOINTS": sorted(batch_ckpt_set),
-        "BATCH_EVAL_STEP": cfg.model.checkpoints.batch_step,
+        "GLOBAL_EVAL_CHECKPOINTS": sorted(eval_schedule.global_passes),
+        "GLOBAL_EVAL_STEP": cfg.model.evaluation.global_step,
+        "BATCH_EVAL_CHECKPOINTS": sorted(eval_schedule.batch_passes),
+        "BATCH_EVAL_STEP": cfg.model.evaluation.batch_step,
         "USE_STATEVECTOR": cfg.model.backend.use_statevector,
         "SIMULATOR_METHOD": cfg.model.backend.simulator_method,
         "Nm": cfg.model.backend.nm,
@@ -626,8 +438,8 @@ def print_last_eval(name, results, ckpts):
         print(f"  Last {name} eval (n={n}): loss={results[str(n)]:.6f}")
 
 
-print_last_eval("global", global_eval_results, global_ckpt_set)
-print_last_eval("batch ", batch_eval_results, batch_ckpt_set)
+print_last_eval("global", global_eval_results, eval_schedule.global_passes)
+print_last_eval("batch ", batch_eval_results, eval_schedule.batch_passes)
 print(f"  Output folder: {output_dir}/")
 
 _elapsed = time.time() - _t_start

@@ -56,19 +56,36 @@ def prob_qubit0_is_1(counts: dict[str, int]) -> float:
 
 
 class QModel:
-    """Variational circuit W(theta) of the run and the backend that executes it."""
+    """Variational circuit W(theta) of the run and the backend that executes it.
+
+    It does not read the configuration: it receives its components, so each
+    one can be swapped.
+
+    backend    : AerSimulator or IBM backend (see make_backend).
+    shots      : shots per circuit; None = exact statevector, no measurement.
+    sampler    : SamplerV2 for an IBM backend, None otherwise.
+    preprocess : preprocess(x, n_dim) turns one event's features into n_dim
+                 amplitudes of unit norm (default: zero padding + L2 norm).
+    """
 
     def __init__(
-        self, circuit: Circuit, n_layers: int, backend_cfg: BackendConfig, seed: int
+        self,
+        circuit: Circuit,
+        n_layers: int,
+        backend,
+        shots: int | None,
+        sampler=None,
+        preprocess=to_amplitudes,
     ):
         self.circuit = circuit
         self.n_layers = n_layers
         self.shift_rules = circuit.shift_rules(n_layers)  # one per theta value
         # Shared by every event circuit; run() binds the theta values to it.
         self.theta = ParameterVector("theta", len(self.shift_rules))
-        self.use_statevector = backend_cfg.use_statevector
-        self.shots = backend_cfg.nm
-        self.backend, self.sampler = make_backend(backend_cfg, seed)
+        self.backend = backend
+        self.shots = shots
+        self.sampler = sampler
+        self.preprocess = preprocess
 
     def build(self, features: np.ndarray) -> list[QuantumCircuit]:
         """One transpiled circuit per event: embedding + W(theta) (+ measurement).
@@ -80,12 +97,12 @@ class QModel:
         for x in features:
             qc = QuantumCircuit(N_QUBITS)
             # Amplitude embedding: prepare the event's 16 amplitudes from |0000>.
-            amplitudes = to_amplitudes(x, N_DIM)
+            amplitudes = self.preprocess(x, N_DIM)
             qc.append(
                 StatePreparation(amplitudes.tolist(), normalize=False), range(N_QUBITS)
             )
             self.circuit.apply(qc, self.theta, self.n_layers)
-            if not self.use_statevector:
+            if self.shots is not None:
                 qc.measure_all()
             circuits.append(qc)
         return transpile(circuits, self.backend)
@@ -99,7 +116,7 @@ class QModel:
                       AerSimulator can spread them over the CPU cores.
         """
         bound = [qc.assign_parameters({self.theta: theta}) for qc in circuits]
-        if self.use_statevector:
+        if self.shots is None:
             # Exact mode: compute the final state of each circuit instead of
             # measuring it. probabilities([0]) gives [P(q0=0), P(q0=1)] and [1]
             # keeps P(q0=1).
