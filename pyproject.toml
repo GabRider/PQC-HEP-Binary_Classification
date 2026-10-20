@@ -32,8 +32,8 @@ line-length = 88
 extend-exclude = [
   "adriano_code",
   "tests/original.py",
+  "tests/original_circuits.py",
   "src/pqc_hep/main.py",
-  "src/pqc_hep/circuits_library_Qiskit.py",
 ]
 # Apply the excludes also when pre-commit passes file names explicitly.
 force-exclude = true
@@ -46,5 +46,6 @@ testpaths = ["tests"]
 markers = [
   "refactoring: training gives the same results as Adriano's code (needs src/pqc_hep/Data/)",
   "classifier: classifier.py gives the same predictions as Adriano's (needs src/pqc_hep/Data/)",
+  "circuit: circuits.py builds the same gates as Adriano's circuits library",
 ]
-addopts = "-m 'not refactoring and not classifier'"
+addopts = "-m 'not refactoring and not classifier and not circuit'"

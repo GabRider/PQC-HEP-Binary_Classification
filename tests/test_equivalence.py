@@ -18,7 +18,7 @@ import pytest
 TESTS = Path(__file__).parent
 PKG = TESTS.parent / "src" / "pqc_hep"
 DATA = PKG / "Data"
-CIRCUITS = PKG / "circuits_library_Qiskit.py"
+CIRCUITS = TESTS / "original_circuits.py"
 
 # Same values as the fixed settings in original.py.
 CONFIG = """
@@ -27,9 +27,6 @@ sig_path = "{data}/train_sig.csv"
 bkg_path = "{data}/train_bkg.csv"
 max_events = 200
 reshuffle_between_passes = true
-
-[model.circuit]
-circuits_file = "{circuits}"
 
 [model.training]
 n_iter = 3
@@ -66,9 +63,7 @@ def train(tmp_path, statevector):
     old, new = tmp_path / "old", tmp_path / "new"
     old.mkdir()
     new.mkdir()
-    config = CONFIG.format(
-        data=DATA, circuits=CIRCUITS, statevector=str(statevector).lower()
-    )
+    config = CONFIG.format(data=DATA, statevector=str(statevector).lower())
     (new / "config.toml").write_text(config)
     run([TESTS / "original.py", *ORIGINAL_ARGS], old, statevector)
     run([PKG / "main.py", "--config", "config.toml"], new, statevector)

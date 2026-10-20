@@ -1,66 +1,11 @@
 """
-PQC_HEP_training_file_Qiskit.py
-
 Author: Adriano Pinto Claro da Fonseca
 Email: apcf@topfonseca.com
 Institutional email: adriano.fonseca@tecnico.ulisboa.pt
 Affiliation: Student at Instituto Superior Técnico, Universidade de Lisboa
 
-Circuit templates and numbering follow Figure 2 of Sim et al. (2019) — see references in README.md.
-
-Usage:
-    python main.py                       # built-in defaults (see config.py)
-    python main.py --config run.toml     # values from a TOML file
-
-    The TOML file only needs the keys that differ from the defaults; see
-    example.toml for every available key. Missing seeds are drawn at random
-    and recorded in results.json. The IBM token is read from the IBM_TOKEN
-    environment variable.
-
-    Data file format (CSV, one event per line):
-        col 0-11 : 12 floating-point feature values
-        col 12   : event weight (float)
-        col 13   : process name (string), ignored
-
-Training pipeline (mini-batch mode):
-    All circuits (embedding + variational form) are pre-built and transpiled once before
-    training. Events are divided into batches of training.batch_size. One complete sweep
-    through all batches constitutes one N_iter pass (epoch).
-
-    Per batch:
-      1. Run all BATCH_SIZE circuits at the current theta -> P(|1>) per event.
-      2. Compute the batch loss (weighted binary cross-entropy, sum is over batch events only).
-      3. Compute the batch gradient via the parameter shift rule, accumulating
-         contributions from all batch events.
-      4. Take one Adam step (sklearn AdamOptimizer) -> update theta.
-
-    After each complete N_iter pass:
-      - BATCH_EVAL_CHECKPOINTS : store the pre-step loss of the last batch.
-      - GLOBAL_EVAL_CHECKPOINTS: run ALL events with current theta, store loss.
-
-    Adam optimizer: sklearn AdamOptimizer, standard constant-beta EMA formulation.
-
-Gradient assumption:
-    The parameter shift rule gives the mathematically exact gradient ONLY for specific
-    gate structures. The code classifies each theta parameter automatically before
-    training and applies the correct rule per parameter:
-      two_term  : gates of the form exp(-iθ/2·P), P a Pauli, eigenvalues {+1,-1}.
-                  Exact gradient: [f(θ+π/2) − f(θ−π/2)] / 2.
-                  Satisfied by: Rx(θ), Ry(θ), Rz(θ).
-      four_term : controlled-Pauli-rotation gates, generator eigenvalues {-1,0,+1}.
-                  Exact gradient: d1·[f(θ+π/2)−f(θ−π/2)] − d2·[f(θ+π)−f(θ−π)]
-                  where d1=1/2, d2=(√2−1)/4.
-                  Satisfied by: CRx(θ), CRy(θ), CRz(θ).
-    If a parameter feeds a gate with no known rule, a ValueError is raised before
-    training begins — there is no silent failure.
-
-Outputs (written to a timestamped folder):
-    results.json   : full training record, loadable with json.load()
-    model.json     : trained gates, backend settings and 10 example events
-    classifier.py  : copy of classifier.py, reads model.json (run it to self-test)
-
-    Folder name encodes: circuit number, layers, N_iter, batch size, and timestamp.
-    Example: circuit2_layers1_50iter_batch100_2026-06-19_21-33-58/
+ see Readme.md and adriano_code/README.md  for more information.
+ Sphinx documentation will be implemented after refactoring.
 """
 
 import sys
@@ -68,7 +13,6 @@ import time
 import argparse
 import os
 import json
-import importlib.util
 import datetime
 import shutil
 import numpy as np
@@ -82,15 +26,8 @@ from qiskit.circuit.library import StatePreparation
 from qiskit.quantum_info import Statevector
 from qiskit_aer import AerSimulator
 
+from pqc_hep import circuits
 from pqc_hep.config import load as load_config
-
-# Note: qiskit_ibm_runtime is NOT imported here unconditionally. If model.backend.ibm_backend
-# is set in the config, the code will attempt to import QiskitRuntimeService
-# from qiskit_ibm_runtime at runtime (inside the QUANTUM PIPELINE section).
-# If qiskit_ibm_runtime is not installed and model.backend.ibm_backend is set, the code exits
-# with a clear installation instruction. If model.backend.ibm_backend is unset (default), the
-# import is never attempted and qiskit_ibm_runtime does not need to be installed.
-
 
 # =============================================================================
 # CONSTANTS
@@ -100,6 +37,13 @@ from pqc_hep.config import load as load_config
 N_QUBITS = 4
 N_FEAT = 12
 N_DIM = 2**N_QUBITS  # Hilbert-space dimension
+
+# Parameter-shift rule of each parameterised gate. A gate missing here raises a
+# KeyError before training: add it here and its formula in compute_batch_gradient_and_loss.
+SHIFT_RULES = {
+    **dict.fromkeys(["rx", "ry", "rz"], "two_term"),
+    **dict.fromkeys(["crx", "cry", "crz"], "four_term"),
+}
 
 _t_start = time.time()
 
@@ -127,7 +71,6 @@ except (OSError, TypeError, ValueError) as e:
     print(f"Error: {e}")
     sys.exit(1)
 
-circuits_file = cfg.model.circuit.circuits_file
 circuit_number = cfg.model.circuit.circuit_number
 n_layers = cfg.model.circuit.n_layers
 n_iter = cfg.model.training.n_iter
@@ -137,10 +80,6 @@ batch_size = (
     cfg.model.training.batch_size
 )  # resolved to an event count after data loading
 
-signal_file = str(cfg.data.sig_path)
-background_file = str(cfg.data.bkg_path)
-circuits_name_only = os.path.basename(circuits_file)
-
 if cfg.data.balance_classes and max_events is None:
     print(
         "Warning: balance_classes=true has no effect when max_events is unset "
@@ -148,30 +87,10 @@ if cfg.data.balance_classes and max_events is None:
         "if you want equal signal and background counts."
     )
 
-# Load circuits library.
-if not os.path.isfile(circuits_file):
-    print(f"Error: circuits file '{circuits_file}' not found.")
-    sys.exit(1)
-
-spec = importlib.util.spec_from_file_location("circuits_library", circuits_file)
-clib = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(clib)
-
-if (
-    circuit_number < 1
-    or circuit_number >= len(clib.CIRCUITS)
-    or clib.CIRCUITS[circuit_number] is None
-):
-    print(
-        f"Error: circuit_number {circuit_number} is invalid. "
-        f"Available: 1 to {len(clib.CIRCUITS)-1}."
-    )
-    sys.exit(1)
-
-variational_form_fn, fixed_params, layer_params, circuit_description = clib.CIRCUITS[
-    circuit_number
-]
-N_PARAMS = fixed_params + n_layers * layer_params
+circuit = circuits.CIRCUITS[circuit_number]
+# Shift rule of each theta value, in theta order (KeyError: gate with no known rule).
+shift_rules = [SHIFT_RULES[g] for g in circuit.rotations(n_layers)]
+N_PARAMS = len(shift_rules)
 
 
 # Parse evaluation checkpoints.
@@ -260,8 +179,8 @@ print(f"""
 {_rule}
 {cfg}
 [extra]
-  circuit                   : [{circuit_number}] {circuit_description}
-  parameters                : {N_PARAMS} ({fixed_params} fixed + {n_layers}x{layer_params}/layer)
+  circuit                   : [{circuit_number}] {circuit.description}
+  parameters                : {N_PARAMS}
   global_eval_at            : start={global_do_start}, n_iter={sorted(global_ckpt_set)}
   batch_eval_at             : start={batch_do_start}, n_iter={sorted(batch_ckpt_set)}
 {_rule}
@@ -303,8 +222,8 @@ def load_events(filepath, label):
 
 
 print("Loading data...")
-s_feats, s_weights, s_labels = load_events(signal_file, 1)
-b_feats, b_weights, b_labels = load_events(background_file, 0)
+s_feats, s_weights, s_labels = load_events(cfg.data.sig_path, 1)
+b_feats, b_weights, b_labels = load_events(cfg.data.bkg_path, 0)
 s_weights = np.array(s_weights, dtype=float)
 b_weights = np.array(b_weights, dtype=float)
 if s_weights.sum() == 0:
@@ -494,7 +413,7 @@ def build_event_circuit(amplitudes, theta_params):
     via assign_parameters(), avoiding repeated transpilation overhead.
     """
     emb_qc = embed_state_in_qiskit(amplitudes)
-    full_qc, _ = variational_form_fn(emb_qc, list(theta_params), n_layers)
+    full_qc = circuit.apply(emb_qc, theta_params, n_layers)
     if not cfg.model.backend.use_statevector:
         full_qc.measure_all()
     return transpile(full_qc, backend)
@@ -566,31 +485,6 @@ def compute_loss(p_values, event_labels, event_weights):
     return float(raw / N)
 
 
-# --- Shift rule classification ------------------------------------------------
-
-
-def gate_names_to_shift_rules(parameterized_gate_names):
-    """
-    Map gate names returned by the circuit function to parameter shift rules.
-    Gate names 'rx', 'ry', 'rz' map to 'two_term'; 'crx', 'cry', 'crz' to 'four_term'.
-    Raises ValueError for any gate with no known rule — no silent failure.
-    """
-    TWO_TERM_GATES = {"rx", "ry", "rz"}
-    FOUR_TERM_GATES = {"crx", "cry", "crz"}
-    rules = []
-    for name in parameterized_gate_names:
-        if name in TWO_TERM_GATES:
-            rules.append("two_term")
-        elif name in FOUR_TERM_GATES:
-            rules.append("four_term")
-        else:
-            raise ValueError(
-                f"Gate '{name}' has no known parameter-shift rule. "
-                f"Add its rule to gate_names_to_shift_rules before using it, "
-                f"and add its gradient formula to compute_batch_gradient_and_loss."
-            )
-    return rules
-
 
 # --- Batch gradient via parameter shift rule ---------------------------------
 
@@ -638,7 +532,7 @@ def compute_batch_gradient_and_loss(
             p_plus = _run_circuits_batch(batch_circuits, tp)
             p_minus = _run_circuits_batch(batch_circuits, tm)
             dpdtheta = (p_plus - p_minus) / 2.0
-        elif shift_rules[k] == "four_term":
+        else:  # four_term
             ta_p = theta.copy()
             ta_p[k] += np.pi / 2
             ta_m = theta.copy()
@@ -652,11 +546,6 @@ def compute_batch_gradient_and_loss(
             f_bp = _run_circuits_batch(batch_circuits, tb_p)
             f_bm = _run_circuits_batch(batch_circuits, tb_m)
             dpdtheta = D1 * (f_ap - f_am) - D2 * (f_bp - f_bm)
-        else:
-            raise ValueError(
-                f"Unknown shift rule '{shift_rules[k]}' for parameter {k}. "
-                f"Add its gradient formula to compute_batch_gradient_and_loss."
-            )
 
         gradients[k] = float(np.dot(dL_dp, dpdtheta) / N)
 
@@ -688,7 +577,7 @@ def evaluate_global_loss(circuit_list, event_labels, event_weights, theta, desc=
 def record_final_circuit(theta_final):
     """Run the variational form once with the trained theta to record the gate sequence."""
     qc = QuantumCircuit(N_QUBITS)
-    variational_form_fn(qc, np.array(theta_final), n_layers)
+    circuit.apply(qc, theta_final, n_layers)
     gates = []
     for instr in qc.data:
         gates.append(
@@ -734,10 +623,6 @@ for x_raw in tqdm(events, desc="Building", unit="event", leave=True):
     all_circuits.append((build_event_circuit(amplitudes, theta_params), theta_params))
 print()
 
-# Classify each theta parameter by the shift rule its gate requires.
-_dummy_qc = QuantumCircuit(N_QUBITS)
-_, parameterized_gate_names = variational_form_fn(_dummy_qc, [0.0] * N_PARAMS, n_layers)
-shift_rules = gate_names_to_shift_rules(parameterized_gate_names)
 _n_two = shift_rules.count("two_term")
 _n_four = shift_rules.count("four_term")
 print(
@@ -909,7 +794,6 @@ json_path = os.path.join(output_dir, "results.json")
 
 results = {
     "run_info": {
-        "circuits_library": circuits_name_only,
         "signal_file": cfg.data.sig_path.name,
         "background_file": cfg.data.bkg_path.name,
         "data_folder": cfg.data.sig_path.resolve().parent.name,
@@ -947,10 +831,8 @@ results = {
     },
     "circuit": {
         "circuit_number": circuit_number,
-        "circuit_description": circuit_description,
+        "circuit_description": circuit.description,
         "n_layers": n_layers,
-        "fixed_params": fixed_params,
-        "layer_params": layer_params,
         "total_params": N_PARAMS,
     },
     "output": {
@@ -977,7 +859,7 @@ model = {
     "timestamp": timestamp,
     "circuit": {
         **cfg.model.circuit.model_dump(mode="json"),
-        "description": circuit_description,
+        "description": circuit.description,
     },
     "n_qubits": N_QUBITS,
     "n_feat": N_FEAT,
@@ -987,7 +869,11 @@ model = {
         "sim_seed": cfg.seeds.simulator,
     },
     "examples": [
-        {"features": events[i].tolist(), "label": int(labels[i]), "expected_p": float(p)}
+        {
+            "features": events[i].tolist(),
+            "label": int(labels[i]),
+            "expected_p": float(p),
+        }
         for i, p in zip(_example_idx, _example_p)
     ],
 }
@@ -997,14 +883,15 @@ with open(model_path, "w") as f:
 print(f"  [2/3] Model JSON   : {model_path}")
 
 classifier_path = shutil.copy(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "classifier.py"), output_dir
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "classifier.py"),
+    output_dir,
 )
 print(f"  [3/3] Classifier   : {classifier_path}")
 
 # --- Final summary -----------------------------------------------------------
 
 print(f"\nTraining complete.")
-print(f"  Circuit      : [{circuit_number}] {circuit_description}")
+print(f"  Circuit      : [{circuit_number}] {circuit.description}")
 print(f"  Layers       : {n_layers}  |  Parameters: {N_PARAMS}")
 print(f"  Events       : {N_EVENTS} used of {len(all_feats)} loaded")
 print(

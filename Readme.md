@@ -96,9 +96,7 @@ In progress:
 To do:
 
 - Split `main.py` into modules (data loading, circuits, training, outputs)
-- Load the circuits library as a normal import instead of a file path
-- Make `main.py` and `circuits_library_Qiskit.py` pass ruff, then remove them from
-  the ruff excludes
+- Make `main.py` pass ruff, then remove it from the ruff excludes
 - Cover the statevector mode in the equivalence test
 - Remove redundant code and factor out duplicated logic
 - Add Sphinx documentation
@@ -109,6 +107,7 @@ To do:
 ```bash
 uv run pytest -m refactoring   # training: theta_final and every loss
 uv run pytest -m classifier    # classifier.py: predictions on 20 events
+uv run pytest -m circuit       # circuits.py: same gates for the 19 circuits
 ```
 
 Both tests run `tests/original.py` (a copy of the original script with fixed
@@ -126,9 +125,8 @@ change of behaviour that makes this test obsolete.
 ```bash
 uv run ruff check .        # lint
 uv run ruff format .       # format
-uv run pytest              # tests (without the refactoring test)
 ```
 
-`main.py` and `circuits_library_Qiskit.py` still come from the original code and
-do not pass ruff yet, so they are excluded from ruff (`extend-exclude` in
-`pyproject.toml`). Remove them from that list once they are cleaned up.
+`main.py` still comes from the original code and does not pass ruff yet, so it
+is excluded from ruff (`extend-exclude` in `pyproject.toml`). Remove it from that
+list once it is cleaned up.

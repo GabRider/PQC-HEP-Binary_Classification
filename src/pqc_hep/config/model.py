@@ -11,8 +11,7 @@ Fraction = Annotated[float, Field(gt=0, le=1)]
 
 
 class CircuitConfig(Section):
-    circuits_file: str = "circuits_library_Qiskit.py"
-    circuit_number: int = 1  # 1-19
+    circuit_number: int = Field(1, ge=1, le=19)
     n_layers: PositiveInt = 1
 
 
