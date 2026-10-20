@@ -29,6 +29,7 @@ from qiskit_aer import AerSimulator
 from pqc_hep import circuits
 from pqc_hep.circuits import ShiftRule
 from pqc_hep.config import load as load_config
+from pqc_hep.data import N_FEAT, Events
 
 # =============================================================================
 # CONSTANTS
@@ -36,7 +37,6 @@ from pqc_hep.config import load as load_config
 # Fixed by the physics setup; do not change without matching data and circuits.
 # =============================================================================
 N_QUBITS = 4
-N_FEAT = 12
 N_DIM = 2**N_QUBITS  # Hilbert-space dimension
 
 _t_start = time.time()
@@ -187,94 +187,62 @@ print(f"""
 # weights relative to the selected training set, and validates batch_size.
 
 
-def load_events(filepath):
-    """
-    Read one CSV file and return (features, weights).
-    Cols 0-11: float features. Col 12: float weight. Col 13: ignored.
-    """
-    data = np.loadtxt(filepath, delimiter=",", usecols=range(N_FEAT + 1), ndmin=2)
-    return data[:, :N_FEAT], data[:, N_FEAT]
-
-
 print("Loading data...")
-s_feats, s_weights = load_events(cfg.data.sig_path)
-b_feats, b_weights = load_events(cfg.data.bkg_path)
-s_labels = np.ones(len(s_feats))
-b_labels = np.zeros(len(b_feats))
-if s_weights.sum() == 0:
+sig = Events.from_csv(cfg.data.sig_path, label=1)
+bkg = Events.from_csv(cfg.data.bkg_path, label=0)
+if sig.weights.sum() == 0:
     print("Error: signal weight sum is zero.")
     sys.exit(1)
-if b_weights.sum() == 0:
+if bkg.weights.sum() == 0:
     print("Error: background weight sum is zero.")
     sys.exit(1)
 print(
-    f"  Loaded : {len(s_feats) + len(b_feats)} events ({len(s_feats)} signal, {len(b_feats)} background)"
+    f"  Loaded : {len(sig) + len(bkg)} events ({len(sig)} signal, {len(bkg)} background)"
 )
 
 # Combine and shuffle all events.
-all_feats = np.concatenate([s_feats, b_feats])
-all_weights = np.concatenate([s_weights, b_weights])
-all_labels = np.concatenate([s_labels, b_labels])
+all_events = sig.concat(bkg)
 rng = np.random.default_rng(seed=cfg.seeds.data_shuffle)
 
 if cfg.data.balance_classes and max_events is not None:
     n_each = max_events // 2
-    available = min(len(s_feats), len(b_feats))
+    available = min(len(sig), len(bkg))
     if n_each > available:
-        smaller = "signal" if len(s_feats) <= len(b_feats) else "background"
+        smaller = "signal" if len(sig) <= len(bkg) else "background"
         print(
             f"Error: BALANCE_CLASSES requested {n_each} per class but only "
             f"{available} {smaller} events available. "
             f"Set MAX_EVENTS <= {2*available} or BALANCE_CLASSES=False."
         )
         sys.exit(1)
-    s_idx = rng.permutation(len(s_feats))[:n_each]
-    b_idx = rng.permutation(len(b_feats))[:n_each]
-    sel_f = np.concatenate([s_feats[s_idx], b_feats[b_idx]])
-    sel_w = np.concatenate([s_weights[s_idx], b_weights[b_idx]])
-    sel_l = np.concatenate([s_labels[s_idx], b_labels[b_idx]])
-    order = rng.permutation(len(sel_f))
-    events = sel_f[order]
-    weights = sel_w[order]
-    labels = sel_l[order]
+    s_idx = rng.permutation(len(sig))[:n_each]
+    b_idx = rng.permutation(len(bkg))[:n_each]
+    selected = sig[s_idx].concat(bkg[b_idx])
+    events = selected[rng.permutation(len(selected))]
 else:
-    if max_events is not None and max_events > len(all_feats):
+    if max_events is not None and max_events > len(all_events):
         print(
-            f"Error: MAX_EVENTS={max_events} exceeds {len(all_feats)} available events."
+            f"Error: MAX_EVENTS={max_events} exceeds {len(all_events)} available events."
         )
         sys.exit(1)
-    order = rng.permutation(len(all_feats))
-    events = all_feats[order]
-    weights = all_weights[order]
-    labels = all_labels[order]
-    if max_events is not None:
-        events = events[:max_events]
-        weights = weights[:max_events]
-        labels = labels[:max_events]
+    # [:None] keeps every event
+    events = all_events[rng.permutation(len(all_events))][:max_events]
 
 if cfg.data.event_order == "signal_first":
-    sig_m = labels == 1
-    bkg_m = labels == 0
-    events = np.concatenate([events[sig_m], events[bkg_m]])
-    weights = np.concatenate([weights[sig_m], weights[bkg_m]])
-    labels = np.concatenate([labels[sig_m], labels[bkg_m]])
+    events = events[events.labels == 1].concat(events[events.labels == 0])
 elif cfg.data.event_order == "background_first":
-    sig_m = labels == 1
-    bkg_m = labels == 0
-    events = np.concatenate([events[bkg_m], events[sig_m]])
-    weights = np.concatenate([weights[bkg_m], weights[sig_m]])
-    labels = np.concatenate([labels[bkg_m], labels[sig_m]])
+    events = events[events.labels == 0].concat(events[events.labels == 1])
 
 N_EVENTS = len(events)
 
 # Normalise weights: sum(w_S) = sum(w_B) = N(background events in training set).
 # Done after selection so the balance is correct for the events actually trained on.
-_sig_mask = labels == 1
-_bkg_mask = labels == 0
+_sig_mask = events.labels == 1
+_bkg_mask = events.labels == 0
 _n_bkg_train = int(_bkg_mask.sum())
 if _n_bkg_train > 0 and _sig_mask.sum() > 0:
-    weights[_sig_mask] *= _n_bkg_train / np.sum(weights[_sig_mask])
-    weights[_bkg_mask] *= _n_bkg_train / np.sum(weights[_bkg_mask])
+    events.weights[_sig_mask] *= _n_bkg_train / np.sum(events.weights[_sig_mask])
+    events.weights[_bkg_mask] *= _n_bkg_train / np.sum(events.weights[_bkg_mask])
 
 print(
     f"  Using  : {N_EVENTS} events ({int(_sig_mask.sum())} signal, {_n_bkg_train} background)"
@@ -458,7 +426,6 @@ def compute_loss(p_values, event_labels, event_weights):
     return float(raw / N)
 
 
-
 # --- Batch gradient via parameter shift rule ---------------------------------
 
 
@@ -590,7 +557,7 @@ def generate_theta_labels(gate_sequence):
 # All N_iter passes reuse these transpiled circuits by binding parameter values.
 print(f"Pre-building and transpiling circuits ({N_EVENTS} events)...")
 all_circuits = []
-for x_raw in tqdm(events, desc="Building", unit="event", leave=True):
+for x_raw in tqdm(events.features, desc="Building", unit="event", leave=True):
     amplitudes = preprocess_event(x_raw)
     theta_params = ParameterVector("theta", N_PARAMS)
     all_circuits.append((build_event_circuit(amplitudes, theta_params), theta_params))
@@ -649,14 +616,19 @@ if global_do_start or batch_do_start:
     _g_start = "--------"
     if global_do_start:
         loss = evaluate_global_loss(
-            all_circuits, labels, weights, theta_current, desc="  Global [start]"
+            all_circuits,
+            events.labels,
+            events.weights,
+            theta_current,
+            desc="  Global [start]",
         )
         global_eval_results["start"] = float(loss)
         _g_start = f"{loss:.6f}"
     if batch_do_start:
         # Evaluate the first batch with the initial random theta before any Adam step.
         p_start = _run_circuits_batch(all_circuits[:batch_size], theta_current)
-        loss_start = compute_loss(p_start, labels[:batch_size], weights[:batch_size])
+        first = events[:batch_size]
+        loss_start = compute_loss(p_start, first.labels, first.weights)
         batch_eval_results["start"] = float(loss_start)
         _b_start = f"{loss_start:.6f}"
     print(f"  [n={'start':>{label_width}}]  batch = {_b_start}   GLOBAL = {_g_start}")
@@ -682,12 +654,10 @@ for current_iter in range(1, n_iter + 1):
         )
         perm = rng_reshuffle.permutation(N_EVENTS)
         pass_circuits = [all_circuits[i] for i in perm]
-        pass_labels = labels[perm]
-        pass_weights = weights[perm]
+        pass_events = events[perm]
     else:
         pass_circuits = all_circuits
-        pass_labels = labels
-        pass_weights = weights
+        pass_events = events
 
     # Sweep through all batches for this pass, with a per-batch progress bar.
     with tqdm(
@@ -702,12 +672,11 @@ for current_iter in range(1, n_iter + 1):
             end = start + batch_size
 
             b_circuits = pass_circuits[start:end]
-            b_labels = pass_labels[start:end]
-            b_weights = pass_weights[start:end]
+            batch = pass_events[start:end]
 
             # Compute gradient and pre-step batch loss via parameter shift rule.
             grad, current_batch_loss = compute_batch_gradient_and_loss(
-                b_circuits, b_labels, b_weights, theta_current, shift_rules
+                b_circuits, batch.labels, batch.weights, theta_current, shift_rules
             )
 
             # One Adam step: sklearn AdamOptimizer updates theta_current in place.
@@ -729,8 +698,8 @@ for current_iter in range(1, n_iter + 1):
         if current_iter in global_ckpt_set:
             g_loss = evaluate_global_loss(
                 all_circuits,
-                labels,
-                weights,
+                events.labels,
+                events.weights,
                 theta_current,
                 desc=f"  Global [n={current_iter:{n_width}d}]",
             )
@@ -771,9 +740,9 @@ results = {
         "background_file": cfg.data.bkg_path.name,
         "data_folder": cfg.data.sig_path.resolve().parent.name,
         "timestamp": timestamp,
-        "n_signal": len(s_feats),
-        "n_background": len(b_feats),
-        "n_events_loaded": len(all_feats),
+        "n_signal": len(sig),
+        "n_background": len(bkg),
+        "n_events_loaded": len(all_events),
         "n_events_used": N_EVENTS,
         "max_events_limit": max_events,
         "BALANCE_CLASSES": cfg.data.balance_classes,
@@ -826,7 +795,10 @@ print(f"  [1/3] Results JSON : {json_path}")
 # events with their final P(signal): running classifier.py alone checks that it
 # reproduces them.
 
-_example_idx = [*np.flatnonzero(labels == 1)[:5], *np.flatnonzero(labels == 0)[:5]]
+_example_idx = [
+    *np.flatnonzero(events.labels == 1)[:5],
+    *np.flatnonzero(events.labels == 0)[:5],
+]
 _example_p = _run_circuits_batch([all_circuits[i] for i in _example_idx], theta_final)
 model = {
     "timestamp": timestamp,
@@ -843,8 +815,8 @@ model = {
     },
     "examples": [
         {
-            "features": events[i].tolist(),
-            "label": int(labels[i]),
+            "features": events.features[i].tolist(),
+            "label": int(events.labels[i]),
             "expected_p": float(p),
         }
         for i, p in zip(_example_idx, _example_p)
@@ -866,7 +838,7 @@ print(f"  [3/3] Classifier   : {classifier_path}")
 print(f"\nTraining complete.")
 print(f"  Circuit      : [{circuit_number}] {circuit.description}")
 print(f"  Layers       : {n_layers}  |  Parameters: {N_PARAMS}")
-print(f"  Events       : {N_EVENTS} used of {len(all_feats)} loaded")
+print(f"  Events       : {N_EVENTS} used of {len(all_events)} loaded")
 print(
     f"  N_iter       : {n_iter}  |  Batches/iter: {N_BATCHES_PER_ITER}  |  Batch size: {batch_size}"
 )
