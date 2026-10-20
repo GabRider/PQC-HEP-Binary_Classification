@@ -1,7 +1,9 @@
 """
 Copy of adriano_code/.../PQC_HEP_training_file_Qiskit.py used by test_equivalence.py.
-Only changes: fixed seeds, RESHUFFLE_BETWEEN_PASSES=True, Nm=100, and
-USE_STATEVECTOR read from the PQC_STATEVECTOR environment variable ("1" = True).
+Only changes: fixed seeds, Nm=100, and the settings varied by the test read from
+PQC_<SETTING> environment variables (bools as "True"/"False"): MAX_EVENTS,
+BALANCE_CLASSES, EVENT_ORDER, RESHUFFLE_BETWEEN_PASSES, N_ITER, BATCH_SIZE
+(exact count) and USE_STATEVECTOR.
 
 PQC_HEP_training_file_Qiskit.py
 
@@ -121,15 +123,15 @@ N_LAYERS        = 1                              # number of variational block r
 DATA_FOLDER     = "../Data"                      # folder containing the CSV files; None = current directory
 SIG_FILE        = "train_sig.csv"               # signal CSV filename (relative to DATA_FOLDER)
 BKG_FILE        = "train_bkg.csv"              # background CSV filename (relative to DATA_FOLDER)
-MAX_EVENTS      = None                          # total events to use; None = use all events
-BALANCE_CLASSES = False                          # if True, use equal S and B counts; requires MAX_EVENTS != None
+MAX_EVENTS      = int(os.environ["PQC_MAX_EVENTS"])  # total events to use; None = use all events
+BALANCE_CLASSES = os.environ["PQC_BALANCE_CLASSES"] == "True"  # if True, use equal S and B counts; requires MAX_EVENTS != None
 
 # Event ordering.
 # Controls the order and randomisation of training events.
 # "random"           : signal and background events interleaved randomly (recommended)
 # "signal_first"     : all signal events first, then all background
 # "background_first" : all background events first, then all signal
-EVENT_ORDER       = "random"
+EVENT_ORDER       = os.environ["PQC_EVENT_ORDER"]
 DATA_SHUFFLE_SEED = 11       # seed for the initial event shuffle; None = random
 
 # Between-pass reshuffling.
@@ -138,13 +140,13 @@ DATA_SHUFFLE_SEED = 11       # seed for the initial event shuffle; None = random
 # Pass n uses seed (PASS_RESHUFFLE_SEED + n), giving reproducible but distinct
 # shuffles each pass. If PASS_RESHUFFLE_SEED=None, each pass gets a fully
 # random seed — runs will not be reproducible even with other seeds fixed.
-RESHUFFLE_BETWEEN_PASSES = True
+RESHUFFLE_BETWEEN_PASSES = os.environ["PQC_RESHUFFLE_BETWEEN_PASSES"] == "True"
 PASS_RESHUFFLE_SEED      = 33     # base seed for between-pass reshuffles; None = random
 
 # Training hyperparameters.
 # Controls the training loop structure (epochs, batch size) and the Adam
 # optimiser step (learning rate and moment decay coefficients).
-N_ITER = 10    # number of full passes over all training events (epochs)
+N_ITER = int(os.environ["PQC_N_ITER"])    # number of full passes over all training events (epochs)
 
 # Batch size.
 # BATCH_SIZE_IS_FRACTION controls how BATCH_SIZE is interpreted:
@@ -153,8 +155,8 @@ N_ITER = 10    # number of full passes over all training events (epochs)
 #   True  : BATCH_SIZE is a fraction of the total events used, in (0, 1].
 #           BATCH_SIZE = 1.0 means the entire dataset in one batch (full batch GD).
 #           The resolved event count must evenly divide the total number of events.
-BATCH_SIZE_IS_FRACTION = True   # False = exact count, True = fraction of total events
-BATCH_SIZE             = 0.1   # exact events per batch (int >= 1) or fraction (float in (0, 1])
+BATCH_SIZE_IS_FRACTION = False  # False = exact count, True = fraction of total events
+BATCH_SIZE             = int(os.environ["PQC_BATCH_SIZE"])   # exact events per batch (int >= 1) or fraction (float in (0, 1])
 
 # Adam optimizer — sklearn AdamOptimizer, standard constant-beta EMA formulation.
 # Uses constant beta_1/beta_2 as EMA decay coefficients.
@@ -204,7 +206,7 @@ BATCH_EVAL_STEP  = None   # integer >= 1, or None to disable
 # and shot-based measurement simulation (realistic for real quantum hardware).
 # True  : exact P(|1>) from statevector — no shot noise, deterministic, fast.
 # False : estimate P(|1>) from Nm measurement shots — realistic for real hardware (default).
-USE_STATEVECTOR   = os.environ.get("PQC_STATEVECTOR") == "1"
+USE_STATEVECTOR   = os.environ["PQC_USE_STATEVECTOR"] == "True"
 Nm                = 100      # shots per circuit evaluation (ignored when USE_STATEVECTOR=True)
 SIM_SEED          = 44         # AerSimulator RNG seed (int >= 0) or None for a random seed
 # Local simulation method (only used when IBM_BACKEND=None and USE_STATEVECTOR=False).
