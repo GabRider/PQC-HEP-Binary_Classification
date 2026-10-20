@@ -187,38 +187,20 @@ print(f"""
 # weights relative to the selected training set, and validates batch_size.
 
 
-def load_events(filepath, label):
+def load_events(filepath):
     """
-    Read one CSV file and return (features, weights, labels).
+    Read one CSV file and return (features, weights).
     Cols 0-11: float features. Col 12: float weight. Col 13: ignored.
-    Malformed lines are skipped silently.
     """
-    if not os.path.isfile(filepath):
-        print(f"Error: file '{filepath}' not found.")
-        sys.exit(1)
-    feats, wts = [], []
-    skipped = 0
-    with open(filepath) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            cols = line.split(",")
-            try:
-                feats.append([float(x) for x in cols[:12]])
-                wts.append(float(cols[12]))
-            except (IndexError, ValueError):
-                skipped += 1
-    if skipped:
-        print(f"  Skipped {skipped} non-event lines in '{filepath}'")
-    return feats, wts, [label] * len(feats)
+    data = np.loadtxt(filepath, delimiter=",", usecols=range(N_FEAT + 1), ndmin=2)
+    return data[:, :N_FEAT], data[:, N_FEAT]
 
 
 print("Loading data...")
-s_feats, s_weights, s_labels = load_events(cfg.data.sig_path, 1)
-b_feats, b_weights, b_labels = load_events(cfg.data.bkg_path, 0)
-s_weights = np.array(s_weights, dtype=float)
-b_weights = np.array(b_weights, dtype=float)
+s_feats, s_weights = load_events(cfg.data.sig_path)
+b_feats, b_weights = load_events(cfg.data.bkg_path)
+s_labels = np.ones(len(s_feats))
+b_labels = np.zeros(len(b_feats))
 if s_weights.sum() == 0:
     print("Error: signal weight sum is zero.")
     sys.exit(1)
@@ -230,9 +212,9 @@ print(
 )
 
 # Combine and shuffle all events.
-all_feats = np.array(s_feats + b_feats)
+all_feats = np.concatenate([s_feats, b_feats])
 all_weights = np.concatenate([s_weights, b_weights])
-all_labels = np.array(s_labels + b_labels, dtype=float)
+all_labels = np.concatenate([s_labels, b_labels])
 rng = np.random.default_rng(seed=cfg.seeds.data_shuffle)
 
 if cfg.data.balance_classes and max_events is not None:
@@ -248,11 +230,9 @@ if cfg.data.balance_classes and max_events is not None:
         sys.exit(1)
     s_idx = rng.permutation(len(s_feats))[:n_each]
     b_idx = rng.permutation(len(b_feats))[:n_each]
-    sel_f = np.concatenate([np.array(s_feats)[s_idx], np.array(b_feats)[b_idx]])
+    sel_f = np.concatenate([s_feats[s_idx], b_feats[b_idx]])
     sel_w = np.concatenate([s_weights[s_idx], b_weights[b_idx]])
-    sel_l = np.concatenate(
-        [np.array(s_labels, dtype=float)[s_idx], np.array(b_labels, dtype=float)[b_idx]]
-    )
+    sel_l = np.concatenate([s_labels[s_idx], b_labels[b_idx]])
     order = rng.permutation(len(sel_f))
     events = sel_f[order]
     weights = sel_w[order]
