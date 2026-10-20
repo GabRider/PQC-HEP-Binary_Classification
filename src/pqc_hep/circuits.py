@@ -6,26 +6,41 @@ in order: theta[k] goes to the k-th rotation of the circuit.
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, auto
 
 from qiskit import QuantumCircuit
 
 
+class ShiftRule(Enum):
+    """Exact gradient formula of a gate (parameter-shift rule)."""
+
+    NONE = auto()  # fixed gate, takes no theta
+    TWO_TERM = auto()  # [f(θ+π/2) − f(θ−π/2)] / 2
+    FOUR_TERM = auto()  # controlled rotations, 4 evaluations
+
+
 class Gate(Enum):
-    # The value is the name of the QuantumCircuit method that applies the gate.
-    # Rotations (take one theta value)
-    RX = "rx"
-    RY = "ry"
-    RZ = "rz"
-    CRX = "crx"
-    CRZ = "crz"
-    # Fixed gates
-    H = "h"
-    CX = "cx"
-    CZ = "cz"
+    # (symbol, parameter-shift rule)
+    RX = ("rx", ShiftRule.TWO_TERM)
+    RY = ("ry", ShiftRule.TWO_TERM)
+    RZ = ("rz", ShiftRule.TWO_TERM)
+    CRX = ("crx", ShiftRule.FOUR_TERM)
+    CRZ = ("crz", ShiftRule.FOUR_TERM)
+    H = ("h", ShiftRule.NONE)
+    CX = ("cx", ShiftRule.NONE)
+    CZ = ("cz", ShiftRule.NONE)
 
+    @property
+    def symbol(self):
+        return self.value[0]
 
-ROTATIONS = {Gate.RX, Gate.RY, Gate.RZ, Gate.CRX, Gate.CRZ}
+    @property
+    def shift_rule(self):
+        return self.value[1]
+
+    @property
+    def is_rotation(self):
+        return self.shift_rule != ShiftRule.NONE
 
 
 @dataclass
@@ -44,17 +59,23 @@ class Circuit:
     def operations(self, n_layers):
         return self.pre + self.layer * n_layers
 
-    def rotations(self, n_layers):
-        """Gate name of each theta value: rotations(n_layers)[k] uses theta[k]."""
+    def shift_rules(self, n_layers):
+        """Use to compute the gradient of the circuit with respect to theta.
+
+        two_term  : grad[k] = (1/N) * dot(dL_dp, (p+ - p-) / 2)
+                    p± evaluated at theta ± π/2.
+        four_term : grad[k] = (1/N) * dot(dL_dp, d1*(fa+−fa−) − d2*(fb+−fb−))
+                    a-shifts ±π/2, b-shifts ±π, d1=1/2, d2=(√2−1)/4.
+        """
         ops = self.operations(n_layers)
-        return [op.gate.value for op in ops if op.gate in ROTATIONS]
+        return [op.gate.shift_rule for op in ops if op.gate.is_rotation]
 
     def apply(self, qc: QuantumCircuit, theta, n_layers):
         """Append the circuit to `qc`; theta holds floats or qiskit Parameters."""
         theta = iter(theta)
         for op in self.operations(n_layers):
-            gate = getattr(qc, op.gate.value)
-            if op.gate in ROTATIONS:
+            gate = getattr(qc, op.gate.symbol)
+            if op.gate.is_rotation:
                 gate(next(theta), *op.qubits)
             else:
                 gate(*op.qubits)
@@ -88,7 +109,7 @@ RZ_common_pattern = [Operation(Gate.RZ, [q]) for q in range(4)]
 H_common_pattern = [Operation(Gate.H, [q]) for q in range(4)]
 
 # Each qubit controls every other one, from q3 down to q0.
-ALL_TO_common_pattern = [[3, 2], [3, 1], [3, 0], [2, 3], [2, 1], [2, 0],
+control_gate_common_pattern = [[3, 2], [3, 1], [3, 0], [2, 3], [2, 1], [2, 0],
               [1, 3], [1, 2], [1, 0], [0, 3], [0, 2], [0, 1]]  # fmt: skip
 
 
@@ -127,13 +148,13 @@ CIRCUITS = {
     5: Circuit(
         "RX-RZ, CRZ from each qubit to all others, RX-RZ",
         layer=RX_RZ_common_pattern
-        + [Operation(Gate.CRZ, pair) for pair in ALL_TO_common_pattern]
+        + [Operation(Gate.CRZ, pair) for pair in control_gate_common_pattern]
         + RX_RZ_common_pattern,
     ),
     6: Circuit(
         "RX-RZ, CRX from each qubit to all others, RX-RZ",
         layer=RX_RZ_common_pattern
-        + [Operation(Gate.CRX, pair) for pair in ALL_TO_common_pattern]
+        + [Operation(Gate.CRX, pair) for pair in control_gate_common_pattern]
         + RX_RZ_common_pattern,
     ),
     7: Circuit(

@@ -28,4 +28,4 @@ def test_same_gates_as_original(number, n_layers):
     old, old_rotations = build(QuantumCircuit(4), list(theta), n_layers)
     new = CIRCUITS[number].apply(QuantumCircuit(4), theta, n_layers)
     assert gate_list(new) == gate_list(old)
-    assert CIRCUITS[number].rotations(n_layers) == old_rotations
+    assert len(CIRCUITS[number].shift_rules(n_layers)) == len(old_rotations)

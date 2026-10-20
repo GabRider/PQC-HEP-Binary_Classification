@@ -27,6 +27,7 @@ from qiskit.quantum_info import Statevector
 from qiskit_aer import AerSimulator
 
 from pqc_hep import circuits
+from pqc_hep.circuits import ShiftRule
 from pqc_hep.config import load as load_config
 
 # =============================================================================
@@ -37,13 +38,6 @@ from pqc_hep.config import load as load_config
 N_QUBITS = 4
 N_FEAT = 12
 N_DIM = 2**N_QUBITS  # Hilbert-space dimension
-
-# Parameter-shift rule of each parameterised gate. A gate missing here raises a
-# KeyError before training: add it here and its formula in compute_batch_gradient_and_loss.
-SHIFT_RULES = {
-    **dict.fromkeys(["rx", "ry", "rz"], "two_term"),
-    **dict.fromkeys(["crx", "cry", "crz"], "four_term"),
-}
 
 _t_start = time.time()
 
@@ -88,8 +82,7 @@ if cfg.data.balance_classes and max_events is None:
     )
 
 circuit = circuits.CIRCUITS[circuit_number]
-# Shift rule of each theta value, in theta order (KeyError: gate with no known rule).
-shift_rules = [SHIFT_RULES[g] for g in circuit.rotations(n_layers)]
+shift_rules = circuit.shift_rules(n_layers)  # one per theta value
 N_PARAMS = len(shift_rules)
 
 
@@ -524,7 +517,7 @@ def compute_batch_gradient_and_loss(
 
     gradients = np.zeros(len(theta))
     for k in range(len(theta)):
-        if shift_rules[k] == "two_term":
+        if shift_rules[k] == ShiftRule.TWO_TERM:
             tp = theta.copy()
             tp[k] += np.pi / 2
             tm = theta.copy()
@@ -623,8 +616,8 @@ for x_raw in tqdm(events, desc="Building", unit="event", leave=True):
     all_circuits.append((build_event_circuit(amplitudes, theta_params), theta_params))
 print()
 
-_n_two = shift_rules.count("two_term")
-_n_four = shift_rules.count("four_term")
+_n_two = shift_rules.count(ShiftRule.TWO_TERM)
+_n_four = shift_rules.count(ShiftRule.FOUR_TERM)
 print(
     f"  Shift rule classification: {_n_two} two-term (Rx/Ry/Rz), "
     f"{_n_four} four-term (CRx/CRy/CRz)\n"
