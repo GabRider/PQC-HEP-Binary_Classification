@@ -267,18 +267,14 @@ def preprocess_event(x_raw):
 
 
 def build_event_circuit(amplitudes, theta_params):
-    """
-    Build and transpile the full circuit for one event: embedding + parameterised
-    variational form. Transpiled once and reused across all passes by binding theta values
-    via assign_parameters(), avoiding repeated transpilation overhead.
-    """
+    """Full circuit of one event: embedding + variational form (+ measurement)."""
     qc = QuantumCircuit(N_QUBITS)
     # Amplitude embedding: prepare the event's 16 amplitudes from |0000>.
     qc.append(StatePreparation(amplitudes.tolist(), normalize=False), range(N_QUBITS))
     circuit.apply(qc, theta_params, n_layers)
     if not cfg.model.backend.use_statevector:
         qc.measure_all()
-    return transpile(qc, backend)
+    return qc
 
 
 def prob_qubit0_is_1(counts):
@@ -460,15 +456,16 @@ def generate_theta_labels(gate_sequence):
 # Pre-builds and transpiles one full circuit per event (embedding + variational
 # form), initialises theta, and creates the sklearn Adam optimiser.
 
-# Pre-build and transpile one full circuit per event (embedding + variational form).
+# Build and transpile one full circuit per event (embedding + variational form).
 # All N_iter passes reuse these transpiled circuits by binding parameter values.
-print(f"Pre-building and transpiling circuits ({N_EVENTS} events)...")
+print(f"Building and transpiling circuits ({N_EVENTS} events)...")
 theta_params = ParameterVector("theta", N_PARAMS)  # shared by every event circuit
-all_circuits = []
-for x_raw in tqdm(events.features, desc="Building", unit="event", leave=True):
-    amplitudes = preprocess_event(x_raw)
-    all_circuits.append(build_event_circuit(amplitudes, theta_params))
-print()
+# One transpile() call for all events: Qiskit spreads them over the CPU cores.
+all_circuits = transpile(
+    [build_event_circuit(preprocess_event(x), theta_params) for x in events.features],
+    backend,
+)
+print(f"  Done: {len(all_circuits)} circuits transpiled.\n")
 
 _n_two = shift_rules.count(ShiftRule.TWO_TERM)
 _n_four = shift_rules.count(ShiftRule.FOUR_TERM)
