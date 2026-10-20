@@ -251,10 +251,10 @@ print(f"  Weight normalisation: sum(w_S) = sum(w_B) = {_n_bkg_train}")
 
 # Resolve BATCH_SIZE fraction to an integer now that N_EVENTS is known.
 if batch_size_is_fraction:
-    _resolved = int(round(float(batch_size) * N_EVENTS))
+    _resolved = int(round(batch_size * N_EVENTS))
     if _resolved < 1:
         print(
-            f"Error: BATCH_SIZE={batch_size} resolves to {_resolved} events for {N_EVENTS} total, "
+            f"Error: batch_size={batch_size} resolves to {_resolved} events for {N_EVENTS} total, "
             f"which is < 1. Use a larger fraction."
         )
         sys.exit(1)
@@ -265,16 +265,7 @@ if batch_size_is_fraction:
 
 # Validate that batch_size evenly divides the event count.
 if N_EVENTS % batch_size != 0:
-    divisors = [i for i in range(1, N_EVENTS + 1) if N_EVENTS % i == 0]
-    print(f"\nError: batch_size={batch_size} does not evenly divide {N_EVENTS} events.")
-    if batch_size_is_fraction:
-        valid_fracs = [
-            f"{d}/{N_EVENTS} = {d/N_EVENTS:.4f}" for d in divisors if 0 < d < N_EVENTS
-        ]
-        print(f"  Valid batch sizes: {divisors}")
-        print(f"  Valid fractions: {valid_fracs[:12]}")
-    else:
-        print(f"  Valid batch sizes for {N_EVENTS} events: {divisors}")
+    print(f"Error: batch_size={batch_size} does not divide {N_EVENTS} events.")
     sys.exit(1)
 
 N_BATCHES_PER_ITER = N_EVENTS // batch_size
