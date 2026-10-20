@@ -20,11 +20,7 @@ from sklearn.metrics import log_loss
 from sklearn.neural_network._stochastic_optimizers import AdamOptimizer
 
 from tqdm import tqdm
-from qiskit import QuantumCircuit, transpile
-from qiskit.circuit import ParameterVector
-from qiskit.circuit.library import StatePreparation
-from qiskit.quantum_info import Statevector
-from qiskit_aer import AerSimulator
+from qiskit import QuantumCircuit
 
 from pqc_hep import circuits
 from pqc_hep.circuits import ShiftRule
@@ -35,16 +31,8 @@ from pqc_hep.data import (
     normalise_weights,
     order_events,
     select_events,
-    to_amplitudes,
 )
-
-# =============================================================================
-# CONSTANTS
-# Problem dimensions, tied to the data format and the circuit library.
-# Fixed by the physics setup; do not change without matching data and circuits.
-# =============================================================================
-N_QUBITS = 4
-N_DIM = 2**N_QUBITS  # Hilbert-space dimension
+from pqc_hep.quantum import N_QUBITS, QModel
 
 _t_start = time.time()
 
@@ -177,85 +165,19 @@ print(f"  Batches per N_iter : {N_BATCHES_PER_ITER}  (batch_size={batch_size})\n
 # =============================================================================
 # QUANTUM PIPELINE
 # =============================================================================
-# Defines all quantum operations: amplitude embedding, transpiled circuit
-# building, shot-based or statevector measurement, loss, and gradient via the
-# parameter shift rule.
+# The circuits and their execution are in quantum.py (QModel); this section
+# keeps the loss and the gradient via the parameter shift rule.
 
 # --- Backend -----------------------------------------------------------------
-# Select either the local AerSimulator or a real IBM Quantum computer.
+# Local AerSimulator, or a real IBM Quantum computer when ibm_backend is set.
 
+try:
+    qmodel = QModel(circuit, n_layers, cfg.model.backend, cfg.seeds.simulator)
+except ImportError as e:
+    print(f"Error: {e}")
+    sys.exit(1)
 if cfg.model.backend.ibm_backend is not None:
-    try:
-        from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as _IBMSampler
-    except ImportError:
-        print(
-            "Error: model.backend.ibm_backend is set but qiskit_ibm_runtime is not installed."
-        )
-        print("  Run: pip install qiskit-ibm-runtime")
-        sys.exit(1)
-    # Token from the IBM_TOKEN environment variable (e.g. uv run --env-file .env);
-    # unset = credentials saved in the local qiskit-ibm-runtime account.
-    service = QiskitRuntimeService(token=os.environ.get("IBM_TOKEN"))
-    backend = service.backend(cfg.model.backend.ibm_backend)
-    _ibm_sampler = _IBMSampler(backend=backend)
     print(f"  Using real IBM Quantum hardware: {cfg.model.backend.ibm_backend}")
-else:
-    _ibm_sampler = None
-    # max_parallel_experiments=0: use all available CPU cores when a batch of circuits
-    # is submitted in a single backend.run() call. Gracefully degrades to sequential
-    # execution if only one core is available. No effect in statevector mode.
-    backend = AerSimulator(
-        method=cfg.model.backend.simulator_method,
-        seed_simulator=cfg.seeds.simulator,
-        max_parallel_experiments=0,
-    )
-
-
-# --- Amplitude embedding and circuit construction ----------------------------
-
-
-def build_event_circuit(amplitudes, theta_params):
-    """Full circuit of one event: embedding + variational form (+ measurement)."""
-    qc = QuantumCircuit(N_QUBITS)
-    # Amplitude embedding: prepare the event's 16 amplitudes from |0000>.
-    qc.append(StatePreparation(amplitudes.tolist(), normalize=False), range(N_QUBITS))
-    circuit.apply(qc, theta_params, n_layers)
-    if not cfg.model.backend.use_statevector:
-        qc.measure_all()
-    return qc
-
-
-def prob_qubit0_is_1(counts):
-    """Estimate P(qubit 0 = |1>) from the shots of one circuit.
-
-    `counts` maps each measured bitstring to its number of shots, for example
-    {"0101": 37, "1100": 12}. Qiskit writes qubit 0 as the last character, so
-    the estimate is the share of shots whose bitstring ends with "1".
-    """
-    return sum(v for k, v in counts.items() if k[-1] == "1") / sum(counts.values())
-
-
-def _run_circuits_batch(batch_circuits, theta):
-    """
-    Evaluate all circuits in batch_circuits at the given theta and return
-    an np.array of P(qubit_0 = |1>) values, one per event.
-
-    Statevector : exact P(|1>) — no backend call, no shot noise.
-    IBM hardware: SamplerV2 (qiskit_ibm_runtime modern API), one run() call for the batch.
-    Local Aer   : backend.run() for all circuits in a single call so AerSimulator can
-                  parallelise across CPU cores (max_parallel_experiments=0).
-    """
-    bound = [qc.assign_parameters({theta_params: theta}) for qc in batch_circuits]
-    if cfg.model.backend.use_statevector:
-        # Exact mode: compute the final state of each circuit instead of measuring it.
-        # probabilities([0]) gives [P(q0=0), P(q0=1)] and [1] keeps P(q0=1).
-        return np.array([Statevector(b).probabilities([0])[1] for b in bound])
-    # Shot mode: each circuit runs nm times and the outcomes are counted.
-    if cfg.model.backend.ibm_backend is not None:
-        result = _ibm_sampler.run(bound, shots=cfg.model.backend.nm).result()
-        return np.array([prob_qubit0_is_1(r.data.meas.get_counts()) for r in result])
-    result = backend.run(bound, shots=cfg.model.backend.nm).result()
-    return np.array([prob_qubit0_is_1(result.get_counts(i)) for i in range(len(bound))])
 
 
 # --- Loss function -----------------------------------------------------------
@@ -309,7 +231,7 @@ def compute_batch_gradient_and_loss(
     D2 = (np.sqrt(2) - 1) / 4
 
     # Forward pass: all batch events in one backend.run() call.
-    p_current = _run_circuits_batch(batch_circuits, theta)
+    p_current = qmodel.run(batch_circuits, theta)
     batch_loss = compute_loss(p_current, batch_labels, batch_weights)
 
     # Analytical per-event gradient of loss w.r.t. P(|1>).
@@ -320,7 +242,7 @@ def compute_batch_gradient_and_loss(
         """P(q0=1) of the batch with only theta[k] shifted."""
         t = theta.copy()
         t[k] += shift
-        return _run_circuits_batch(batch_circuits, t)
+        return qmodel.run(batch_circuits, t)
 
     # Each run is seeded from seed_simulator and the circuit's position in the run,
     # so grouping several shifts into one run would change the shot results.
@@ -358,7 +280,7 @@ def evaluate_global_loss(circuit_list, event_labels, event_weights, theta, desc=
     for c in tqdm(range(n_chunks), desc=f"  {desc}", unit="batch", leave=False):
         s = c * batch_size
         e = min(s + batch_size, n_total)
-        p_values[s:e] = _run_circuits_batch(circuit_list[s:e], theta)
+        p_values[s:e] = qmodel.run(circuit_list[s:e], theta)
     return compute_loss(p_values, event_labels, event_weights)
 
 
@@ -407,12 +329,7 @@ def generate_theta_labels(gate_sequence):
 # Build and transpile one full circuit per event (embedding + variational form).
 # All N_iter passes reuse these transpiled circuits by binding parameter values.
 print(f"Building and transpiling circuits ({N_EVENTS} events)...")
-theta_params = ParameterVector("theta", N_PARAMS)  # shared by every event circuit
-# One transpile() call for all events: Qiskit spreads them over the CPU cores.
-all_circuits = transpile(
-    [build_event_circuit(to_amplitudes(x, N_DIM), theta_params) for x in events.features],
-    backend,
-)
+all_circuits = qmodel.build(events.features)
 print(f"  Done: {len(all_circuits)} circuits transpiled.\n")
 
 _n_two = shift_rules.count(ShiftRule.TWO_TERM)
@@ -493,7 +410,7 @@ if global_do_start or batch_do_start:
     if batch_do_start:
         # First batch with the initial random theta, before any Adam step.
         first = events[:batch_size]
-        p_start = _run_circuits_batch(all_circuits[:batch_size], theta_current)
+        p_start = qmodel.run(all_circuits[:batch_size], theta_current)
         b_loss = compute_loss(p_start, first.labels, first.weights)
     record_checkpoint("start", b_loss, g_loss)
     print()
@@ -656,7 +573,7 @@ _example_idx = [
     *np.flatnonzero(events.labels == 1)[:5],
     *np.flatnonzero(events.labels == 0)[:5],
 ]
-_example_p = _run_circuits_batch([all_circuits[i] for i in _example_idx], theta_final)
+_example_p = qmodel.run([all_circuits[i] for i in _example_idx], theta_final)
 model = {
     "timestamp": timestamp,
     "circuit": {
