@@ -232,11 +232,7 @@ if cfg.model.backend.ibm_backend is not None:
         sys.exit(1)
     # Token from the IBM_TOKEN environment variable (e.g. uv run --env-file .env);
     # unset = credentials saved in the local qiskit-ibm-runtime account.
-    _ibm_token = os.environ.get("IBM_TOKEN")
-    if _ibm_token:
-        service = QiskitRuntimeService(token=_ibm_token)
-    else:
-        service = QiskitRuntimeService()
+    service = QiskitRuntimeService(token=os.environ.get("IBM_TOKEN"))
     backend = service.backend(cfg.model.backend.ibm_backend)
     _ibm_sampler = _IBMSampler(backend=backend)
     print(f"  Using real IBM Quantum hardware: {cfg.model.backend.ibm_backend}")
@@ -270,24 +266,29 @@ def preprocess_event(x_raw):
 # --- Amplitude embedding and circuit construction ----------------------------
 
 
-def embed_state_in_qiskit(amplitudes):
-    """Return a QuantumCircuit that prepares the given amplitude vector from |0000>."""
-    qc = QuantumCircuit(N_QUBITS)
-    qc.append(StatePreparation(amplitudes.tolist(), normalize=False), range(N_QUBITS))
-    return qc
-
-
 def build_event_circuit(amplitudes, theta_params):
     """
     Build and transpile the full circuit for one event: embedding + parameterised
     variational form. Transpiled once and reused across all passes by binding theta values
     via assign_parameters(), avoiding repeated transpilation overhead.
     """
-    emb_qc = embed_state_in_qiskit(amplitudes)
-    full_qc = circuit.apply(emb_qc, theta_params, n_layers)
+    qc = QuantumCircuit(N_QUBITS)
+    # Amplitude embedding: prepare the event's 16 amplitudes from |0000>.
+    qc.append(StatePreparation(amplitudes.tolist(), normalize=False), range(N_QUBITS))
+    circuit.apply(qc, theta_params, n_layers)
     if not cfg.model.backend.use_statevector:
-        full_qc.measure_all()
-    return transpile(full_qc, backend)
+        qc.measure_all()
+    return transpile(qc, backend)
+
+
+def prob_qubit0_is_1(counts):
+    """Estimate P(qubit 0 = |1>) from the shots of one circuit.
+
+    `counts` maps each measured bitstring to its number of shots, for example
+    {"0101": 37, "1100": 12}. Qiskit writes qubit 0 as the last character, so
+    the estimate is the share of shots whose bitstring ends with "1".
+    """
+    return sum(v for k, v in counts.items() if k[-1] == "1") / sum(counts.values())
 
 
 def _run_circuits_batch(batch_circuits, theta):
@@ -300,38 +301,17 @@ def _run_circuits_batch(batch_circuits, theta):
     Local Aer   : backend.run() for all circuits in a single call so AerSimulator can
                   parallelise across CPU cores (max_parallel_experiments=0).
     """
-    bound = [
-        qc.assign_parameters({params[i]: float(v) for i, v in enumerate(theta)})
-        for qc, params in batch_circuits
-    ]
+    bound = [qc.assign_parameters({theta_params: theta}) for qc in batch_circuits]
     if cfg.model.backend.use_statevector:
-        return np.array(
-            [
-                float(
-                    Statevector.from_instruction(b).probabilities([0])[1]
-                )  # [0]=qubit index; [1]=P(qubit 0=|1>)
-                for b in bound
-            ]
-        )
-    # Qiskit little-endian: bitstring is q_{n-1}...q_1 q_0, so k[-1] is qubit 0.
+        # Exact mode: compute the final state of each circuit instead of measuring it.
+        # probabilities([0]) gives [P(q0=0), P(q0=1)] and [1] keeps P(q0=1).
+        return np.array([Statevector(b).probabilities([0])[1] for b in bound])
+    # Shot mode: each circuit runs nm times and the outcomes are counted.
     if cfg.model.backend.ibm_backend is not None:
         result = _ibm_sampler.run(bound, shots=cfg.model.backend.nm).result()
-        values = []
-        for i in range(len(bound)):
-            counts = result[i].data.meas.get_counts()
-            total = sum(counts.values())
-            values.append(
-                float(sum(v for k, v in counts.items() if k[-1] == "1") / total)
-            )
-        return np.array(values)
-    job = backend.run(bound, shots=cfg.model.backend.nm)
-    result = job.result()
-    values = []
-    for i in range(len(bound)):
-        counts = result.get_counts(i)
-        total = sum(counts.values())
-        values.append(float(sum(v for k, v in counts.items() if k[-1] == "1") / total))
-    return np.array(values)
+        return np.array([prob_qubit0_is_1(r.data.meas.get_counts()) for r in result])
+    result = backend.run(bound, shots=cfg.model.backend.nm).result()
+    return np.array([prob_qubit0_is_1(result.get_counts(i)) for i in range(len(bound))])
 
 
 # --- Loss function -----------------------------------------------------------
@@ -486,11 +466,11 @@ def generate_theta_labels(gate_sequence):
 # Pre-build and transpile one full circuit per event (embedding + variational form).
 # All N_iter passes reuse these transpiled circuits by binding parameter values.
 print(f"Pre-building and transpiling circuits ({N_EVENTS} events)...")
+theta_params = ParameterVector("theta", N_PARAMS)  # shared by every event circuit
 all_circuits = []
 for x_raw in tqdm(events.features, desc="Building", unit="event", leave=True):
     amplitudes = preprocess_event(x_raw)
-    theta_params = ParameterVector("theta", N_PARAMS)
-    all_circuits.append((build_event_circuit(amplitudes, theta_params), theta_params))
+    all_circuits.append(build_event_circuit(amplitudes, theta_params))
 print()
 
 _n_two = shift_rules.count(ShiftRule.TWO_TERM)
