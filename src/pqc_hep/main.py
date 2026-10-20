@@ -372,30 +372,27 @@ def compute_batch_gradient_and_loss(
     p_clip = np.clip(p_current, 1e-7, 1 - 1e-7)
     dL_dp = batch_weights * (-batch_labels / p_clip + (1 - batch_labels) / (1 - p_clip))
 
+    def p_shifted(k, shift):
+        """P(q0=1) of the batch with only theta[k] shifted."""
+        t = theta.copy()
+        t[k] += shift
+        return _run_circuits_batch(batch_circuits, t)
+
+    # The circuits run in the same order as the original code (+π/2, −π/2, +π, −π):
+    # in shot mode each run draws from the simulator's random generator.
     gradients = np.zeros(len(theta))
-    for k in range(len(theta)):
-        if shift_rules[k] == ShiftRule.TWO_TERM:
-            tp = theta.copy()
-            tp[k] += np.pi / 2
-            tm = theta.copy()
-            tm[k] -= np.pi / 2
-            p_plus = _run_circuits_batch(batch_circuits, tp)
-            p_minus = _run_circuits_batch(batch_circuits, tm)
-            dpdtheta = (p_plus - p_minus) / 2.0
-        else:  # four_term
-            ta_p = theta.copy()
-            ta_p[k] += np.pi / 2
-            ta_m = theta.copy()
-            ta_m[k] -= np.pi / 2
-            tb_p = theta.copy()
-            tb_p[k] += np.pi
-            tb_m = theta.copy()
-            tb_m[k] -= np.pi
-            f_ap = _run_circuits_batch(batch_circuits, ta_p)
-            f_am = _run_circuits_batch(batch_circuits, ta_m)
-            f_bp = _run_circuits_batch(batch_circuits, tb_p)
-            f_bm = _run_circuits_batch(batch_circuits, tb_m)
-            dpdtheta = D1 * (f_ap - f_am) - D2 * (f_bp - f_bm)
+    for k, rule in enumerate(shift_rules):
+        if rule == ShiftRule.TWO_TERM:
+            # RX, RY, RZ: the output is a sine of theta[k] with a single
+            # frequency, so two runs at ±π/2 give the exact derivative.
+            dpdtheta = (p_shifted(k, np.pi / 2) - p_shifted(k, -np.pi / 2)) / 2.0
+        else:  # FOUR_TERM
+            # CRX, CRZ: the rotation only acts when the control is |1>, so the
+            # output mixes two frequencies of theta[k]. Two more runs at ±π are
+            # needed to separate them.
+            dpdtheta = D1 * (p_shifted(k, np.pi / 2) - p_shifted(k, -np.pi / 2)) - D2 * (
+                p_shifted(k, np.pi) - p_shifted(k, -np.pi)
+            )
 
         gradients[k] = float(np.dot(dL_dp, dpdtheta) / N)
 
