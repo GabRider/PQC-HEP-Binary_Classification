@@ -501,6 +501,23 @@ label_width = max(
     5, n_width
 )  # "start" is 5 chars; ensures [n=start] aligns with [n=  N]
 
+
+def record_checkpoint(key, batch_loss, global_loss):
+    """Save the losses of one checkpoint ("start" or the pass number) and print
+    them on one line; None = not measured at this checkpoint."""
+    if batch_loss is not None:
+        batch_eval_results[key] = float(batch_loss)
+    if global_loss is not None:
+        global_eval_results[key] = float(global_loss)
+
+    def show(loss):
+        return "--------" if loss is None else f"{loss:.6f}"
+
+    tqdm.write(
+        f"  [n={key:>{label_width}}]  batch = {show(batch_loss)}   GLOBAL = {show(global_loss)}"
+    )
+
+
 print(
     f"Starting training: {n_iter} passes x {N_BATCHES_PER_ITER} batches "
     f"x {batch_size} events/batch"
@@ -519,26 +536,21 @@ print(
 # =============================================================================
 
 if global_do_start or batch_do_start:
-    _b_start = "--------"
-    _g_start = "--------"
+    g_loss = b_loss = None
     if global_do_start:
-        loss = evaluate_global_loss(
+        g_loss = evaluate_global_loss(
             all_circuits,
             events.labels,
             events.weights,
             theta_current,
             desc="  Global [start]",
         )
-        global_eval_results["start"] = float(loss)
-        _g_start = f"{loss:.6f}"
     if batch_do_start:
-        # Evaluate the first batch with the initial random theta before any Adam step.
-        p_start = _run_circuits_batch(all_circuits[:batch_size], theta_current)
+        # First batch with the initial random theta, before any Adam step.
         first = events[:batch_size]
-        loss_start = compute_loss(p_start, first.labels, first.weights)
-        batch_eval_results["start"] = float(loss_start)
-        _b_start = f"{loss_start:.6f}"
-    print(f"  [n={'start':>{label_width}}]  batch = {_b_start}   GLOBAL = {_g_start}")
+        p_start = _run_circuits_batch(all_circuits[:batch_size], theta_current)
+        b_loss = compute_loss(p_start, first.labels, first.weights)
+    record_checkpoint("start", b_loss, g_loss)
     print()
 
 
@@ -597,11 +609,8 @@ for current_iter in range(1, n_iter + 1):
     # Eval checkpoints: batch (last batch pre-step loss) and/or global (all events).
     # Both are shown on the same line for easy comparison.
     if current_iter in batch_ckpt_set or current_iter in global_ckpt_set:
-        _b_str = "--------"
-        _g_str = "--------"
-        if current_iter in batch_ckpt_set:
-            batch_eval_results[str(current_iter)] = float(last_batch_loss)
-            _b_str = f"{last_batch_loss:.6f}"
+        b_loss = last_batch_loss if current_iter in batch_ckpt_set else None
+        g_loss = None
         if current_iter in global_ckpt_set:
             g_loss = evaluate_global_loss(
                 all_circuits,
@@ -610,11 +619,7 @@ for current_iter in range(1, n_iter + 1):
                 theta_current,
                 desc=f"  Global [n={current_iter:{n_width}d}]",
             )
-            global_eval_results[str(current_iter)] = float(g_loss)
-            _g_str = f"{g_loss:.6f}"
-        tqdm.write(
-            f"  [n={current_iter:{label_width}d}]  batch = {_b_str}   GLOBAL = {_g_str}"
-        )
+        record_checkpoint(str(current_iter), b_loss, g_loss)
 
 pass_bar.close()
 theta_final = theta_current.tolist()
@@ -750,18 +755,17 @@ print(
     f"  N_iter       : {n_iter}  |  Batches/iter: {N_BATCHES_PER_ITER}  |  Batch size: {batch_size}"
 )
 print(f"  theta_final  : {np.round(theta_final, 4)}")
-if global_eval_results:
-    last_g = sorted((k for k in global_eval_results if k != "start"), key=int)
-    if last_g:
-        print(
-            f"  Last global eval (n={last_g[-1]}): loss={global_eval_results[last_g[-1]]:.6f}"
-        )
-if batch_eval_results:
-    last_b = sorted((k for k in batch_eval_results if k != "start"), key=int)
-    if last_b:
-        print(
-            f"  Last batch  eval (n={last_b[-1]}): loss={batch_eval_results[last_b[-1]]:.6f}"
-        )
+
+
+def print_last_eval(name, results, ckpts):
+    """Print the loss of the last evaluated pass, if there is one."""
+    if ckpts:
+        n = max(ckpts)
+        print(f"  Last {name} eval (n={n}): loss={results[str(n)]:.6f}")
+
+
+print_last_eval("global", global_eval_results, global_ckpt_set)
+print_last_eval("batch ", batch_eval_results, batch_ckpt_set)
 print(f"  Output folder: {output_dir}/")
 
 _elapsed = time.time() - _t_start
