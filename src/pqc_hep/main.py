@@ -74,13 +74,6 @@ batch_size = (
     cfg.model.training.batch_size
 )  # resolved to an event count after data loading
 
-if cfg.data.balance_classes and max_events is None:
-    print(
-        "Warning: balance_classes=true has no effect when max_events is unset "
-        "(all events are used regardless). Set max_events to the desired total "
-        "if you want equal signal and background counts."
-    )
-
 circuit = circuits.CIRCUITS[circuit_number]
 shift_rules = circuit.shift_rules(n_layers)  # one per theta value
 N_PARAMS = len(shift_rules)
@@ -89,77 +82,23 @@ N_PARAMS = len(shift_rules)
 # Parse evaluation checkpoints.
 
 
-def parse_checkpoints(raw, n_iter_total, setting_name, auto_step=None):
-    """
-    Convert a raw checkpoint list into a set of integer N_iter values and a
-    flag indicating whether "start" was requested.
-    Accepted values: integers in [1, n_iter_total], "start", "end".
-    If auto_step is set, fills checkpoints from min to max of the integer set
-    at that step interval. When only one integer is in the set (e.g. just "end"),
-    filling starts from auto_step up to that single value.
-    Returns (checkpoint_int_set, include_start).
-    """
-    if not raw:
-        return set(), False
-    ckpt_set = set()
-    include_start = False
-    for val in raw:
-        if val == "start":
-            include_start = True
-        elif val == "end":
-            ckpt_set.add(n_iter_total)
-        elif isinstance(val, int):
-            if 1 <= val <= n_iter_total:
-                ckpt_set.add(val)
-            else:
-                print(
-                    f"Warning: {setting_name} value {val} is outside "
-                    f"[1, {n_iter_total}] and will be skipped."
-                )
-        else:
-            print(
-                f"Warning: {setting_name} value {repr(val)} is not valid and will be skipped."
-            )
+def parse_checkpoints(raw, n_iter, step):
+    """Passes where to evaluate ("end" = n_iter), and whether "start" is requested.
 
-    # Auto-fill intermediate checkpoints at regular step intervals.
-    # max is taken from the set; min is the set's minimum if 2+ values exist,
-    # otherwise auto_step itself (handles the ["start","end"] case where only
-    # one integer is present — fills from the first step up to that endpoint).
-    if auto_step is not None:
-        if len(ckpt_set) == 0:
-            print(
-                f"Warning: {setting_name}_STEP={auto_step} is set but "
-                f"{setting_name} has no integer checkpoints to fill between; "
-                f"auto-fill has no effect."
-            )
-        else:
-            before = len(ckpt_set)
-            max_val = max(ckpt_set)
-            min_val = min(ckpt_set) if len(ckpt_set) >= 2 else auto_step
-            for v in range(min_val, max_val + 1, auto_step):
-                if 1 <= v <= n_iter_total:
-                    ckpt_set.add(v)
-            if len(ckpt_set) == before:
-                print(
-                    f"Warning: {setting_name}_STEP={auto_step} produced no "
-                    f"additional checkpoints (step may be larger than the "
-                    f"interval between existing checkpoints or N_ITER={n_iter_total})."
-                )
-
-    return ckpt_set, include_start
+    The values are checked by the config (ModelConfig._checkpoints_fit_n_iter).
+    """
+    ckpts = {n_iter if v == "end" else v for v in raw if v != "start"}
+    if step is not None:
+        low = min(ckpts) if len(ckpts) >= 2 else step
+        ckpts.update(range(low, max(ckpts) + 1, step))
+    return ckpts, "start" in raw
 
 
 global_ckpt_set, global_do_start = parse_checkpoints(
-    cfg.model.checkpoints.global_checkpoints,
-    n_iter,
-    "GLOBAL_EVAL_CHECKPOINTS",
-    auto_step=cfg.model.checkpoints.global_step,
+    cfg.model.checkpoints.global_checkpoints, n_iter, cfg.model.checkpoints.global_step
 )
 batch_ckpt_set, batch_do_start = parse_checkpoints(
-    cfg.model.checkpoints.batch_checkpoints,
-    n_iter,
-    "BATCH_EVAL_CHECKPOINTS",
-    auto_step=cfg.model.checkpoints.batch_step,
+    cfg.model.checkpoints.batch_checkpoints, n_iter, cfg.model.checkpoints.batch_step
 )
 
 
@@ -204,15 +143,15 @@ print(
 all_events = sig.concat(bkg)
 rng = np.random.default_rng(seed=cfg.seeds.data_shuffle)
 
-if cfg.data.balance_classes and max_events is not None:
+if cfg.data.balance_classes:
     n_each = max_events // 2
     available = min(len(sig), len(bkg))
     if n_each > available:
         smaller = "signal" if len(sig) <= len(bkg) else "background"
         print(
-            f"Error: BALANCE_CLASSES requested {n_each} per class but only "
+            f"Error: balance_classes requested {n_each} per class but only "
             f"{available} {smaller} events available. "
-            f"Set MAX_EVENTS <= {2*available} or BALANCE_CLASSES=False."
+            f"Set max_events <= {2*available} or balance_classes=false."
         )
         sys.exit(1)
     s_idx = rng.permutation(len(sig))[:n_each]
@@ -222,7 +161,7 @@ if cfg.data.balance_classes and max_events is not None:
 else:
     if max_events is not None and max_events > len(all_events):
         print(
-            f"Error: MAX_EVENTS={max_events} exceeds {len(all_events)} available events."
+            f"Error: max_events={max_events} exceeds {len(all_events)} available events."
         )
         sys.exit(1)
     # [:None] keeps every event

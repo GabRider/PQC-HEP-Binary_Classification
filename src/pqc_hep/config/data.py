@@ -25,3 +25,9 @@ class DataConfig(Section):
                 "reshuffle_between_passes=true requires event_order='random'."
             )
         return self
+
+    @model_validator(mode="after")
+    def _balance_needs_max_events(self):
+        if self.balance_classes and self.max_events == "all":
+            raise ValueError("balance_classes=true requires max_events to be a number.")
+        return self
