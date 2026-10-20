@@ -29,7 +29,14 @@ from qiskit_aer import AerSimulator
 from pqc_hep import circuits
 from pqc_hep.circuits import ShiftRule
 from pqc_hep.config import load as load_config
-from pqc_hep.data import N_FEAT, Events
+from pqc_hep.data import (
+    N_FEAT,
+    load_events,
+    normalise_weights,
+    order_events,
+    select_events,
+    to_amplitudes,
+)
 
 # =============================================================================
 # CONSTANTS
@@ -127,66 +134,22 @@ print(f"""
 
 
 print("Loading data...")
-sig = Events.from_csv(cfg.data.sig_path, label=1)
-bkg = Events.from_csv(cfg.data.bkg_path, label=0)
-if sig.weights.sum() == 0:
-    print("Error: signal weight sum is zero.")
+try:
+    sig, bkg = load_events(cfg.data.sig_path, cfg.data.bkg_path)
+    rng = np.random.default_rng(seed=cfg.seeds.data_shuffle)
+    events = select_events(sig, bkg, max_events, cfg.data.balance_classes, rng)
+except ValueError as e:
+    print(f"Error: {e}")
     sys.exit(1)
-if bkg.weights.sum() == 0:
-    print("Error: background weight sum is zero.")
-    sys.exit(1)
-print(
-    f"  Loaded : {len(sig) + len(bkg)} events ({len(sig)} signal, {len(bkg)} background)"
-)
-
-# Combine and shuffle all events.
-all_events = sig.concat(bkg)
-rng = np.random.default_rng(seed=cfg.seeds.data_shuffle)
-
-if cfg.data.balance_classes:
-    n_each = max_events // 2
-    available = min(len(sig), len(bkg))
-    if n_each > available:
-        smaller = "signal" if len(sig) <= len(bkg) else "background"
-        print(
-            f"Error: balance_classes requested {n_each} per class but only "
-            f"{available} {smaller} events available. "
-            f"Set max_events <= {2*available} or balance_classes=false."
-        )
-        sys.exit(1)
-    s_idx = rng.permutation(len(sig))[:n_each]
-    b_idx = rng.permutation(len(bkg))[:n_each]
-    selected = sig[s_idx].concat(bkg[b_idx])
-    events = selected[rng.permutation(len(selected))]
-else:
-    if max_events is not None and max_events > len(all_events):
-        print(
-            f"Error: max_events={max_events} exceeds {len(all_events)} available events."
-        )
-        sys.exit(1)
-    # [:None] keeps every event
-    events = all_events[rng.permutation(len(all_events))][:max_events]
-
-if cfg.data.event_order == "signal_first":
-    events = events[events.labels == 1].concat(events[events.labels == 0])
-elif cfg.data.event_order == "background_first":
-    events = events[events.labels == 0].concat(events[events.labels == 1])
-
+events = order_events(events, cfg.data.event_order)
+events = normalise_weights(events)
 N_EVENTS = len(events)
+N_LOADED = len(sig) + len(bkg)
+n_sig, n_bkg = int((events.labels == 1).sum()), int((events.labels == 0).sum())
 
-# Normalise weights: sum(w_S) = sum(w_B) = N(background events in training set).
-# Done after selection so the balance is correct for the events actually trained on.
-_sig_mask = events.labels == 1
-_bkg_mask = events.labels == 0
-_n_bkg_train = int(_bkg_mask.sum())
-if _n_bkg_train > 0 and _sig_mask.sum() > 0:
-    events.weights[_sig_mask] *= _n_bkg_train / np.sum(events.weights[_sig_mask])
-    events.weights[_bkg_mask] *= _n_bkg_train / np.sum(events.weights[_bkg_mask])
-
-print(
-    f"  Using  : {N_EVENTS} events ({int(_sig_mask.sum())} signal, {_n_bkg_train} background)"
-)
-print(f"  Weight normalisation: sum(w_S) = sum(w_B) = {_n_bkg_train}")
+print(f"  Loaded : {N_LOADED} events ({len(sig)} signal, {len(bkg)} background)")
+print(f"  Using  : {N_EVENTS} events ({n_sig} signal, {n_bkg} background)")
+print(f"  Weight normalisation: sum(w_S) = sum(w_B) = {n_bkg}")
 
 # Resolve BATCH_SIZE fraction to an integer now that N_EVENTS is known.
 if batch_size_is_fraction:
@@ -246,21 +209,6 @@ else:
         seed_simulator=cfg.seeds.simulator,
         max_parallel_experiments=0,
     )
-
-
-# --- Preprocessing -----------------------------------------------------------
-
-
-def preprocess_event(x_raw):
-    """
-    Pad the 12-dimensional feature vector to length 16 with zeros, then
-    normalise to unit length to form a valid quantum-state amplitude vector.
-    """
-    x_padded = np.concatenate([x_raw, np.zeros(N_DIM - N_FEAT)])
-    norm = np.linalg.norm(x_padded)
-    if norm < 1e-12:
-        raise ValueError("Feature vector has zero norm and cannot be normalised.")
-    return x_padded / norm
 
 
 # --- Amplitude embedding and circuit construction ----------------------------
@@ -374,8 +322,8 @@ def compute_batch_gradient_and_loss(
         t[k] += shift
         return _run_circuits_batch(batch_circuits, t)
 
-    # The circuits run in the same order as the original code (+π/2, −π/2, +π, −π):
-    # in shot mode each run draws from the simulator's random generator.
+    # Each run is seeded from seed_simulator and the circuit's position in the run,
+    # so grouping several shifts into one run would change the shot results.
     gradients = np.zeros(len(theta))
     for k, rule in enumerate(shift_rules):
         if rule == ShiftRule.TWO_TERM:
@@ -462,7 +410,7 @@ print(f"Building and transpiling circuits ({N_EVENTS} events)...")
 theta_params = ParameterVector("theta", N_PARAMS)  # shared by every event circuit
 # One transpile() call for all events: Qiskit spreads them over the CPU cores.
 all_circuits = transpile(
-    [build_event_circuit(preprocess_event(x), theta_params) for x in events.features],
+    [build_event_circuit(to_amplitudes(x, N_DIM), theta_params) for x in events.features],
     backend,
 )
 print(f"  Done: {len(all_circuits)} circuits transpiled.\n")
@@ -651,7 +599,7 @@ results = {
         "timestamp": timestamp,
         "n_signal": len(sig),
         "n_background": len(bkg),
-        "n_events_loaded": len(all_events),
+        "n_events_loaded": N_LOADED,
         "n_events_used": N_EVENTS,
         "max_events_limit": max_events,
         "BALANCE_CLASSES": cfg.data.balance_classes,
@@ -747,7 +695,7 @@ print(f"  [3/3] Classifier   : {classifier_path}")
 print(f"\nTraining complete.")
 print(f"  Circuit      : [{circuit_number}] {circuit.description}")
 print(f"  Layers       : {n_layers}  |  Parameters: {N_PARAMS}")
-print(f"  Events       : {N_EVENTS} used of {len(all_events)} loaded")
+print(f"  Events       : {N_EVENTS} used of {N_LOADED} loaded")
 print(
     f"  N_iter       : {n_iter}  |  Batches/iter: {N_BATCHES_PER_ITER}  |  Batch size: {batch_size}"
 )
