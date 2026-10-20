@@ -118,7 +118,7 @@ N_DIM    = 2**N_QUBITS    # Hilbert-space dimension
 # Circuits and data.
 # Selects the variational form circuit and specifies where to find the data files.
 CIRCUITS_FILE   = "circuits_library_Qiskit.py"  # path to the circuits library Python file
-CIRCUIT_NUMBER  = 1                              # circuit template to use (integer 1-19)
+CIRCUIT_NUMBER  = int(os.environ["PQC_CIRCUIT_NUMBER"])  # circuit template to use (integer 1-19)
 N_LAYERS        = 1                              # number of variational block repetitions (>= 1)
 DATA_FOLDER     = "../Data"                      # folder containing the CSV files; None = current directory
 SIG_FILE        = "train_sig.csv"               # signal CSV filename (relative to DATA_FOLDER)

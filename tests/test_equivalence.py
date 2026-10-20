@@ -30,6 +30,7 @@ BASE = {
     "n_iter": 2,
     "batch_size": 10,
     "use_statevector": False,
+    "circuit_number": 1,  # RX/RZ only: two-term shift rule
 }
 CASES = {
     "default": BASE,
@@ -45,6 +46,8 @@ CASES = {
         "event_order": "background_first",
         "reshuffle_between_passes": False,
     },
+    # CRZ followed by RX-RZ: the four-term rule's ±π shifts change the output
+    "four_term": {**BASE, "circuit_number": 7},
 }
 
 # main.py config; {...} come from a case. Fixed values match original.py.
@@ -56,6 +59,9 @@ max_events = {max_events}
 balance_classes = {balance_classes}
 event_order = {event_order}
 reshuffle_between_passes = {reshuffle_between_passes}
+
+[model.circuit]
+circuit_number = {circuit_number}
 
 [model.training]
 n_iter = {n_iter}
