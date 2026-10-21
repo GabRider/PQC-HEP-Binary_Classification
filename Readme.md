@@ -87,6 +87,7 @@ Done:
 - uv project, ruff and pre-commit setup
 - Original code moved, unchanged, to `adriano_code/`
 - Equivalence test against the original script (`uv run pytest -m refactoring`)
+- `main.py` split into modules (data, quantum, training, output) and passing ruff
 
 In progress:
 
@@ -95,8 +96,6 @@ In progress:
 
 To do:
 
-- Split `main.py` into modules (data loading, circuits, training, outputs)
-- Make `main.py` pass ruff, then remove it from the ruff excludes
 - Cover the statevector mode in the equivalence test
 - Remove redundant code and factor out duplicated logic
 - Add Sphinx documentation
@@ -122,11 +121,10 @@ change of behaviour that makes this test obsolete.
 
 ## Development
 
+[`src/README.md`](src/README.md) describes the role of each source file and
+which one to open to modify or add something.
+
 ```bash
 uv run ruff check .        # lint
 uv run ruff format .       # format
 ```
-
-`main.py` still comes from the original code and does not pass ruff yet, so it
-is excluded from ruff (`extend-exclude` in `pyproject.toml`). Remove it from that
-list once it is cleaned up.

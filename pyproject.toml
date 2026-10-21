@@ -33,7 +33,6 @@ extend-exclude = [
   "adriano_code",
   "tests/original.py",
   "tests/original_circuits.py",
-  "src/pqc_hep/main.py",
 ]
 # Apply the excludes also when pre-commit passes file names explicitly.
 force-exclude = true

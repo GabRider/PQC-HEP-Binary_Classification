@@ -129,3 +129,17 @@ class QModel:
             result = self.backend.run(bound, shots=self.shots).result()
             counts = [result.get_counts(i) for i in range(len(bound))]
         return np.array([prob_qubit0_is_1(c) for c in counts])
+
+    def gate_sequence(self, theta: np.ndarray) -> list[dict]:
+        """Gates of W(theta) at the given theta values, as written to model.json
+        for classifier.py."""
+        qc = QuantumCircuit(N_QUBITS)
+        self.circuit.apply(qc, theta, self.n_layers)
+        return [
+            {
+                "name": instr.operation.name,
+                "qubits": [qc.find_bit(q).index for q in instr.qubits],
+                "params": [float(p) for p in instr.operation.params],
+            }
+            for instr in qc.data
+        ]
