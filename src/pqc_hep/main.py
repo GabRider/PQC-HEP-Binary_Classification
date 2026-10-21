@@ -89,12 +89,9 @@ def main(config_path=None):
     circuit_number = cfg.model.circuit.circuit_number
     n_layers = cfg.model.circuit.n_layers
     n_iter = cfg.model.training.n_iter
-    max_events = None if cfg.data.max_events == "all" else cfg.data.max_events
-    batch_size_is_fraction = isinstance(cfg.model.training.batch_size, float)
 
     circuit = circuits.CIRCUITS[circuit_number]
-    shift_rules = circuit.shift_rules(n_layers)  # one per theta value
-    n_params = len(shift_rules)
+    n_params = len(circuit.shift_rules(n_layers))  # one theta value per rotation
 
     eval_schedule = EvalSchedule.from_config(cfg.model.evaluation, n_iter)
     global_at = sorted(eval_schedule.global_passes)
@@ -123,7 +120,9 @@ def main(config_path=None):
     print("Loading data...")
     sig, bkg = load_events(cfg.data.sig_path, cfg.data.bkg_path)
     rng = np.random.default_rng(seed=cfg.seeds.data_shuffle)
-    events = select_events(sig, bkg, max_events, cfg.data.balance_classes, rng)
+    events = select_events(
+        sig, bkg, cfg.data.event_limit, cfg.data.balance_classes, rng
+    )
     events = order_events(events, cfg.data.event_order)
     events = normalise_weights(events)
     n_events = len(events)
@@ -136,7 +135,7 @@ def main(config_path=None):
     print(f"  Weight normalisation: sum(w_S) = sum(w_B) = {n_bkg}")
 
     batch_size = resolve_batch_size(cfg.model.training.batch_size, n_events)
-    if batch_size_is_fraction:
+    if isinstance(cfg.model.training.batch_size, float):
         print(
             f"  Batch size (resolved) : {batch_size}  "
             f"(= {batch_size / n_events * 100:.1f}% of {n_events} events)"
@@ -170,8 +169,8 @@ def main(config_path=None):
     all_circuits = qmodel.build(events.features)
     print(f"  Done: {len(all_circuits)} circuits transpiled.\n")
 
-    n_two = shift_rules.count(ShiftRule.TWO_TERM)
-    n_four = shift_rules.count(ShiftRule.FOUR_TERM)
+    n_two = qmodel.shift_rules.count(ShiftRule.TWO_TERM)
+    n_four = qmodel.shift_rules.count(ShiftRule.FOUR_TERM)
     print(
         f"  Shift rule classification: {n_two} two-term (Rx/Ry/Rz), "
         f"{n_four} four-term (CRx/CRy/CRz)\n"

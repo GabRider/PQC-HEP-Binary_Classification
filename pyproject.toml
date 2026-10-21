@@ -11,7 +11,6 @@ dependencies = [
   "qiskit-aer",
   # AdamOptimizer is imported from a private sklearn module: pinned via uv.lock.
   "scikit-learn",
-  "loguru",
   "tqdm",
   "pydantic>=2.13.5",
 ]

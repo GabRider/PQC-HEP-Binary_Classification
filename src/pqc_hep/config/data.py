@@ -18,6 +18,11 @@ class DataConfig(Section):
     reshuffle_between_passes: bool = False
     run_tag: str = ""  # output folder prefix
 
+    @property
+    def event_limit(self) -> int | None:
+        """max_events as a number of events; None = "all"."""
+        return None if self.max_events == "all" else self.max_events
+
     @model_validator(mode="after")
     def _reshuffle_needs_random_order(self):
         if self.reshuffle_between_passes and self.event_order != "random":

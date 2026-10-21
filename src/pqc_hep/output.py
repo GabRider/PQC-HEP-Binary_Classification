@@ -31,7 +31,7 @@ def _theta_labels(gates: list[dict]) -> list[str]:
             name = gate["name"]
             qubits = gate["qubits"]
             val = gate["params"][0]
-            if name in ("crz", "crx", "cry"):
+            if name in ("crz", "crx"):
                 out.append(
                     f"CTRL-{name[1:].upper()}(ctrl=q{qubits[0]}, tgt=q{qubits[1]})"
                     f" = {val:.6f} rad"
@@ -67,9 +67,7 @@ def build_results(
             "n_background": n_background,
             "n_events_loaded": n_signal + n_background,
             "n_events_used": n_events,
-            "max_events_limit": (
-                None if cfg.data.max_events == "all" else cfg.data.max_events
-            ),
+            "max_events_limit": cfg.data.event_limit,
             "BALANCE_CLASSES": cfg.data.balance_classes,
             "EVENT_ORDER": cfg.data.event_order,
             "DATA_SHUFFLE_SEED": cfg.seeds.data_shuffle,
