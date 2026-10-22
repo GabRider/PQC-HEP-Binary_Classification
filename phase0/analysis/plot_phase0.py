@@ -187,3 +187,63 @@ for ax, a in zip(axes, ALPHAS_RAW):
 axes[0].set_ylabel("Loss (weighted cross-entropy)")
 fig.suptitle("Training and validation loss: z-score vs. raw features (circuit 6, L = 1, b = 100)")
 save(fig, "fig7_normalisation_loss")
+
+
+
+# --- Runs with 10,000 training events (batch-size scan, alpha = 0.05) ----------------
+BATCHES_10K = ["100", "1000", "2000"]
+scan_10k = {b: read_history(f"10k_circuit6_layers1_50iter_batch{b}_alpha0.05") for b in BATCHES_10K}
+
+for b, h in scan_10k.items():
+    print(f"10k, b = {b:>4}: {len(h)} rows, final validation AUC = {h['val_auc'][-1]:.3f}")
+
+
+# =====================================================================================
+# FIGURE 8 - Batch-size scan with 10,000 events: validation AUC per epoch
+# =====================================================================================
+fig, ax = plt.subplots(figsize=(6, 4))
+for colour, (b, h) in zip(COLOURS, scan_10k.items()):
+    ax.plot(h["epoch"], h["val_auc"], color=colour, linewidth=2, label=f"b = {b} ({int(b) // 100} %)")
+ax.set_xlabel("Epoch")
+ax.set_ylabel("AUC (validation)")
+ax.set_title("Batch-size scan, 10,000 events (circuit 6, L = 1, α = 0.05)")
+ax.grid(alpha=0.3)
+ax.legend(title="Batch size")
+save(fig, "fig8_10k_batch_auc")
+
+
+# =====================================================================================
+# FIGURE 9 - Batch-size scan with 10,000 events: training and validation loss
+# =====================================================================================
+fig, axes = plt.subplots(1, 3, figsize=(12, 3.5), sharey=True)
+for ax, colour, (b, h) in zip(axes, COLOURS, scan_10k.items()):
+    ax.plot(h["epoch"], h["train_loss"], color=colour, linestyle="--", linewidth=1.5, label="train")
+    ax.plot(h["epoch"], h["val_loss"],   color=colour, linewidth=2,                  label="validation")
+    i_min = np.argmin(h["val_loss"])
+    ax.plot(h["epoch"][i_min], h["val_loss"][i_min], "o", color=colour, markersize=8)
+    ax.set_title(f"b = {b} ({int(b) // 100} %)")
+    ax.set_xlabel("Epoch")
+    ax.grid(alpha=0.3)
+    ax.legend()
+axes[0].set_ylabel("Loss (weighted cross-entropy)")
+fig.suptitle("Training and validation loss vs. batch size, 10,000 events (circuit 6, L = 1, α = 0.05)")
+save(fig, "fig9_10k_batch_loss")
+
+
+# =====================================================================================
+# FIGURE 10 - Effect of the number of events: 1,000 vs. 10,000 (batch = 10 %, 500 steps)
+# =====================================================================================
+fig, ax = plt.subplots(figsize=(6, 4))
+runs_10pct = [
+    ("1,000 events (b = 100)",   scan_batch["100"], COLOURS[0]),
+    ("10,000 events (b = 1000)", scan_10k["1000"],  COLOURS[1]),
+]
+for name, h, colour in runs_10pct:
+    ax.plot(h["epoch"], h["train_auc"], color=colour, linestyle="--", linewidth=1.5, label=f"{name}, train")
+    ax.plot(h["epoch"], h["val_auc"],   color=colour, linewidth=2,                  label=f"{name}, validation")
+ax.set_xlabel("Epoch")
+ax.set_ylabel("AUC")
+ax.set_title("1,000 vs. 10,000 events (batch = 10 %, α = 0.05)")
+ax.grid(alpha=0.3)
+ax.legend(fontsize=8)
+save(fig, "fig10_1k_vs_10k")
