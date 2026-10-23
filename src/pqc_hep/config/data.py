@@ -1,4 +1,4 @@
-"""[data] table: input files, event selection and ordering, output tag."""
+"""[data] table: input files, event selection and ordering, output folder."""
 
 from pathlib import Path
 from typing import Literal
@@ -16,7 +16,8 @@ class DataConfig(Section):
     balance_classes: bool = False  # equal S and B counts; needs max_events
     event_order: Literal["random", "signal_first", "background_first"] = "random"
     reshuffle_between_passes: bool = False
-    run_tag: str = ""  # output folder prefix
+    # Folder where the run folders are written; created if missing.
+    results_dir: Path = Field(Path("result"), strict=False)
 
     @property
     def event_limit(self) -> int | None:

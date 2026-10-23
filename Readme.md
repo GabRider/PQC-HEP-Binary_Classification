@@ -38,12 +38,28 @@ uv run --env-file ../../.env python main.py --config my_run.toml   # IBM hardwar
 ```
 
 Relative paths in the TOML file are relative to the directory you run from.
-Each run writes a folder `<run_tag>_circuit<N>_layers<L>_<iter>iter_batch<B>_<timestamp>/`
-in the current directory, containing:
+Each run writes a folder in `results_dir` (default `result/`), for example:
+
+```
+result/c01/2026-10-23/11h20m01_scan_lr_L1_e10_train1k_b100_lr0.005_seed3f9a2c/
+```
+
+- `c01`: circuit number; `2026-10-23`: day of the run;
+- `11h20m01`: start time, first so that a day's runs sort in order;
+- `scan_lr`: name of the `--config` TOML file without `.toml` (absent without
+  `--config`). Name the file after what it tests;
+- `L1`: layers, `e10`: epochs (`n_iter`), `train1k`: training events,
+  `b100`: batch size, `lr0.005`: learning rate, `seed3f9a2c`: id computed from
+  the 4 seeds (same seeds, same id; the seeds themselves are in the TOML copy).
+
+The folder contains:
 
 - `results.json`: full training record;
 - `model.json`: trained gates, backend settings and 10 training events with
   their final P(signal);
+- `<toml>.toml` (`config.toml` without `--config`): the effective configuration,
+  including the seeds drawn at random. `--config` on this file reruns the same
+  training;
 - `classifier.py`: a copy of `src/pqc_hep/classifier.py` that reads `model.json`
   and needs only numpy, qiskit and qiskit-aer.
 

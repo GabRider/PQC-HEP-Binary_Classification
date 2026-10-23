@@ -28,8 +28,9 @@ src
 └── README.md
 ```
 
-The run folders, named `circuit<N>_layers<L>_<n_iter>iter_batch<B>_<timestamp>/`,
-are created in the current directory and are not versioned. After a change,
+The run folders, such as
+`result/c01/2026-10-23/11h20m01_example_L1_e10_train1k_b100_lr0.005_seed3f9a2c/`
+(see the root `Readme.md`), are created in `results_dir` and are not versioned. After a change,
 `uv run pytest -m refactoring` checks that training still gives the same
 results as the original code (see the root `Readme.md`).
 
@@ -156,11 +157,13 @@ Where to change:
 
 ## `output.py`
 
-At the end of the run, `output.py` writes three files to the run folder:
+At the end of the run, `output.py` writes four files to the run folder:
 
 - `results.json`: the settings of the run, the final θ and the losses measured
   during training;
 - `model.json`: the trained gates and 10 training events with their P(signal);
+- the effective configuration as TOML, named like the `--config` file
+  (`config.toml` without one), seeds included;
 - a copy of `classifier.py`.
 
 It then prints a summary: circuit, number of events, final θ, last losses and

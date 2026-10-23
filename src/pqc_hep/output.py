@@ -1,10 +1,15 @@
-"""Run outputs: results.json, model.json, classifier.py copy, final summary."""
+"""Run outputs: results.json, model.json, effective TOML, classifier.py copy,
+final summary."""
 
+import datetime
+import hashlib
 import json
 import os
 import shutil
+from pathlib import Path
 
 import numpy as np
+import tomli_w
 
 from pqc_hep.circuits import CIRCUITS
 from pqc_hep.config import Config
@@ -13,14 +18,43 @@ from pqc_hep.quantum import N_QUBITS
 from pqc_hep.training import EvalSchedule
 
 
-def run_dir_name(cfg: Config, batch_size: int, timestamp: str) -> str:
-    """Folder named after the circuit, layers, training settings, and run time."""
+def _short_count(n: int) -> str:
+    """Event count for a folder name: 10000 -> "10k", 1500 -> "1500"."""
+    return f"{n // 1000}k" if n >= 1000 and n % 1000 == 0 else str(n)
+
+
+def run_dir_name(
+    cfg: Config,
+    config_path: str | None,
+    n_events: int,
+    batch_size: int,
+    now: datetime.datetime,
+) -> Path:
+    """Run folder results_dir/c<circuit>/<date>/<time>_<toml>_<settings>, e.g.
+    result/c01/2026-10-23/11h20m01_example_L1_e10_train1k_b100_lr0.005_seed3f9a2c.
+    The time comes first so a day's runs sort in order; <toml> is the
+    --config file name, absent without one."""
     c = cfg.model.circuit
-    name = (
-        f"circuit{c.circuit_number}_layers{c.n_layers}_"
-        f"{cfg.model.training.n_iter}iter_batch{batch_size}_{timestamp}"
+    # Same 4 seeds -> same id. hashlib, not hash(): stable across Python versions.
+    seeds = json.dumps(cfg.seeds.model_dump(), sort_keys=True).encode()
+    seed_id = hashlib.sha1(seeds).hexdigest()[:6]
+    # TODO: add val<N> once there is a validation set.
+    parts = [
+        now.strftime("%Hh%Mm%S"),
+        *([Path(config_path).stem] if config_path is not None else []),
+        f"L{c.n_layers}",
+        f"e{cfg.model.training.n_iter}",
+        f"train{_short_count(n_events)}",
+        f"b{batch_size}",
+        f"lr{cfg.model.adam.alpha:g}",
+        f"seed{seed_id}",
+    ]
+    return (
+        cfg.data.results_dir
+        / f"c{c.circuit_number:02d}"
+        / now.strftime("%Y-%m-%d")
+        / "_".join(parts)
     )
-    return f"{cfg.data.run_tag}_{name}" if cfg.data.run_tag else name
 
 
 def _theta_labels(gates: list[dict]) -> list[str]:
@@ -41,9 +75,10 @@ def _theta_labels(gates: list[dict]) -> list[str]:
     return out
 
 
-# TODO: refactor when main.py is clean (11 arguments).
+# TODO: refactor when main.py is clean (12 arguments).
 def build_results(
     cfg: Config,
+    config_path: str | None,
     timestamp: str,
     n_signal: int,
     n_background: int,
@@ -92,7 +127,7 @@ def build_results(
             "Nm": cfg.model.backend.nm,
             "SIM_SEED": cfg.seeds.simulator,
             "IBM_BACKEND": cfg.model.backend.ibm_backend,
-            "RUN_TAG": cfg.data.run_tag,
+            "CONFIG_FILE": config_path,
         },
         "circuit": {
             "circuit_number": c.circuit_number,
@@ -141,26 +176,39 @@ def build_model(
     }
 
 
-def save(output_dir: str, results: dict, model: dict) -> None:
-    """Write results.json, model.json and a copy of classifier.py to output_dir."""
+def save(
+    output_dir: str, results: dict, model: dict, cfg: Config, config_path: str | None
+) -> None:
+    """Write results.json, model.json, the effective configuration (named like
+    the --config file, config.toml without one) and a copy of classifier.py to
+    output_dir."""
     os.makedirs(output_dir, exist_ok=True)
     print(f"\nSaving outputs to: {output_dir}/")
 
     json_path = os.path.join(output_dir, "results.json")
     with open(json_path, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"  [1/3] Results JSON : {json_path}")
+    print(f"  [1/4] Results JSON : {json_path}")
 
     model_path = os.path.join(output_dir, "model.json")
     with open(model_path, "w") as f:
         json.dump(model, f, indent=2)
-    print(f"  [2/3] Model JSON   : {model_path}")
+    print(f"  [2/4] Model JSON   : {model_path}")
+
+    # Effective configuration: every value, seeds drawn at random included, so
+    # `--config` on this file reruns the same training. TOML has no null, so the
+    # None values (= default) are left out.
+    config_name = Path(config_path).name if config_path else "config.toml"
+    toml_path = os.path.join(output_dir, config_name)
+    with open(toml_path, "wb") as f:
+        tomli_w.dump(cfg.model_dump(mode="json", exclude_none=True), f)
+    print(f"  [3/4] Config TOML  : {toml_path}")
 
     classifier_path = shutil.copy(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "classifier.py"),
         output_dir,
     )
-    print(f"  [3/3] Classifier   : {classifier_path}")
+    print(f"  [4/4] Classifier   : {classifier_path}")
 
 
 def print_summary(results: dict, output_dir: str, elapsed: float) -> None:

@@ -256,13 +256,15 @@ def main(config_path=None):
     # =========================================================================
     # OUTPUT GENERATION
     # =========================================================================
-    # Writes results.json, model.json and a copy of classifier.py to a
-    # timestamped folder, then prints the final summary (output.py).
+    # Writes results.json, model.json, the effective TOML and a copy of
+    # classifier.py to the run folder, then prints the final summary (output.py).
 
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_dir = output.run_dir_name(cfg, batch_size, timestamp)
+    now = datetime.datetime.now()
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    output_dir = output.run_dir_name(cfg, config_path, n_events, batch_size, now)
     results = output.build_results(
         cfg,
+        config_path,
         timestamp,
         len(sig),
         len(bkg),
@@ -285,7 +287,7 @@ def main(config_path=None):
     model = output.build_model(
         cfg, timestamp, gate_sequence, events[example_idx], example_p
     )
-    output.save(output_dir, results, model)
+    output.save(output_dir, results, model, cfg, config_path)
     output.print_summary(results, output_dir, time.time() - t_start)
 
 

@@ -13,6 +13,7 @@ dependencies = [
   "scikit-learn",
   "tqdm",
   "pydantic>=2.13.5",
+  "tomli-w>=1.2.0",
 ]
 
 [project.optional-dependencies]

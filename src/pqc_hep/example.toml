@@ -8,7 +8,7 @@ max_events = 1000                    # number of events, or "all"
 balance_classes = false              # equal S and B counts; needs max_events
 event_order = "random"               # "random", "signal_first" or "background_first"
 reshuffle_between_passes = false     # needs event_order = "random"
-run_tag = ""                         # prefix for the output folder name
+results_dir = "result"               # folder for the run outputs; created if missing
 
 [model.circuit]
 circuit_number = 1                   # circuit template (1-19)

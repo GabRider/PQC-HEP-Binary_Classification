@@ -106,7 +106,7 @@ def train(tmp_path, case):
     (new / "config.toml").write_text(config)
     run([TESTS / "original.py", *ORIGINAL_ARGS], old, case)
     run([PKG / "main.py", "--config", "config.toml"], new, case)
-    return next(old.glob("*/")), next(new.glob("*/"))
+    return next(old.glob("*/")), next((new / "result").glob("*/*/*/"))
 
 
 def results_output(run_dir):
