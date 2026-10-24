@@ -106,6 +106,11 @@ from qiskit.circuit import ParameterVector
 from qiskit.circuit.library import StatePreparation
 from qiskit.quantum_info import Statevector
 from qiskit_aer import AerSimulator
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+from qiskit.quantum_info import Operator
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 # Note: qiskit_ibm_runtime is NOT imported here unconditionally. If IBM_BACKEND
 # is set in USER SETTINGS, the code will attempt to import QiskitRuntimeService
 # from qiskit_ibm_runtime at runtime (inside the QUANTUM PIPELINE section).
@@ -232,6 +237,16 @@ SIM_SEED          = None       # AerSimulator RNG seed (int >= 0) or None for a 
 # "density_matrix"       : for open quantum systems with noise models.
 SIMULATOR_METHOD  = "automatic"
 
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+# Simulation backend (only relevant when USE_STATEVECTOR=True and IBM_BACKEND=None).
+# "qiskit" : one circuit per event, simulated gate by gate (current method).
+# "hybrid" : encoded states kept as vectors, U(theta) computed once per theta by Qiskit
+#            and applied to all events of a batch at once with numpy.
+SIM_BACKEND = "qiskit"
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
 # Real IBM Quantum hardware selection.
 # Set IBM_BACKEND to an IBM QPU name to run on real hardware instead of local simulation.
 #   None       : use the local AerSimulator (all settings above apply normally).
@@ -289,6 +304,11 @@ parser.add_argument("--scaling",        type=str,   default=None, dest="scaling"
                     choices=["zscore", "none"])
 parser.add_argument("--n-val",          type=int,   default=None, dest="n_val")
 parser.add_argument("--run-tag",        type=str,   default=None, dest="run_tag")
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+parser.add_argument("--backend",    type=str,   default=None, dest="backend", choices=["qiskit", "hybrid"])
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 args = parser.parse_args()
 
 # Command-line arguments override USER SETTINGS; None means "use USER SETTINGS".
@@ -317,6 +337,22 @@ if args.run_tag is not None:
     RUN_TAG = args.run_tag
 elif FEATURE_SCALING is None and RUN_TAG is None:
     RUN_TAG = "raw"     # runs without standardisation are saved as raw_circuit..._...
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+if args.backend is not None:
+    SIM_BACKEND = args.backend
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+if SIM_BACKEND == "hybrid" and args.run_tag is None:
+    if RUN_TAG is None:
+        RUN_TAG = "hybrid"
+    else:
+        RUN_TAG = f"{RUN_TAG}_hybrid"
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 effective_data_folder = args.data_folder if args.data_folder is not None else DATA_FOLDER
 effective_sig         = args.sig_input   if args.sig_input   is not None else SIG_FILE
@@ -385,6 +421,18 @@ if IBM_BACKEND is not None and USE_STATEVECTOR:
     print("Error: IBM_BACKEND and USE_STATEVECTOR=True are incompatible. "
           "Real hardware always uses shot-based measurement.")
     sys.exit(1)
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+if SIM_BACKEND not in ("qiskit", "hybrid"):
+    print("Error: SIM_BACKEND must be 'Qiskit' or 'hybrid'.")
+    sys.exit(1)
+if SIM_BACKEND == "hybrid" and (not USE_STATEVECTOR or IBM_BACKEND is not None):
+    print("Error: SIM_BACKEND='hybrid' is an exact simulation. It requires "
+          "USE_STATEVECTOR=True and IBM_BACKEND=None. Use the 'qiskit' backend "
+          "for shot-based simulation or real hardware.")
+    sys.exit(1)
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 if RUN_TAG is not None and not isinstance(RUN_TAG, str):
     print("Error: RUN_TAG must be a string or None.")
     sys.exit(1)
@@ -532,8 +580,14 @@ _gstep_str = f"  (auto-step every {GLOBAL_EVAL_STEP})" if GLOBAL_EVAL_STEP else 
 _bstep_str = f"  (auto-step every {BATCH_EVAL_STEP})"  if BATCH_EVAL_STEP  else ""
 print(f"  Global eval ckpts : start={global_do_start}, at_n_iter={sorted(global_ckpt_set)}{_gstep_str}")
 print(f"  Batch  eval ckpts : start={batch_do_start},  at_n_iter={sorted(batch_ckpt_set)}{_bstep_str}")
-if USE_STATEVECTOR:
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+if USE_STATEVECTOR and SIM_BACKEND == "hybrid":
+    _sim_desc = "Hybrid (exact: Qiskit Operator U(theta) applied with numpy)"
+elif USE_STATEVECTOR:
     _sim_desc = "Statevector (exact, no shot noise)"
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 else:
     _sim_desc = f"Shot-based  Nm={Nm}  method={SIMULATOR_METHOD}"
 print(f"  Simulation mode   : {_sim_desc}  (sim seed={SIM_SEED if SIM_SEED is not None else 'random'})")
@@ -794,6 +848,21 @@ def build_event_circuit(amplitudes, theta_params):
         full_qc.measure_all()
     return transpile(full_qc, backend)
 
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+_Q0_ONE_IDX = np.array([k for k in range(N_DIM) if k & 1])
+
+def _probs_hybrid(amplitudes, theta):
+    amps = np.asarray(amplitudes, dtype = float)
+    qc = QuantumCircuit(N_QUBITS)
+    qc, _ = variational_form_fn(qc, [float(v) for v in theta], n_layers)
+    U = Operator(qc).data
+    psi = amps @ U.T
+    return np.sum(np.abs(psi[:, _Q0_ONE_IDX]) ** 2, axis=1)
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+
 
 def _run_circuits_batch(batch_circuits, theta):
     """
@@ -805,6 +874,12 @@ def _run_circuits_batch(batch_circuits, theta):
     Local Aer   : backend.run() for all circuits in a single call so AerSimulator can
                   parallelise across CPU cores (max_parallel_experiments=0).
     """
+    #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    if SIM_BACKEND == "hybrid":
+        return _probs_hybrid(batch_circuits, theta)
+    #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
     bound = [
         qc.assign_parameters({params[i]: float(v) for i, v in enumerate(theta)})
         for qc, params in batch_circuits
@@ -1008,20 +1083,31 @@ def generate_theta_labels(gate_sequence):
 
 # Pre-build and transpile one full circuit per event (embedding + variational form).
 # All N_iter passes reuse these transpiled circuits by binding parameter values.
-print(f"Pre-building and transpiling circuits ({N_EVENTS} events)...")
-all_circuits = []
-for x_raw in tqdm(events, desc="Building", unit="event", leave=True):
-    amplitudes   = preprocess_event(x_raw)
-    theta_params = ParameterVector('theta', N_PARAMS)
-    all_circuits.append((build_event_circuit(amplitudes, theta_params), theta_params))
-print()
 
-val_circuits = []
-for x_raw in tqdm(val_events, desc="Building val", unit="event", leave=True):
-    amplitudes = preprocess_event(x_raw)
-    theta_params = ParameterVector('theta', N_PARAMS)
-    val_circuits.append((build_event_circuit(amplitudes, theta_params), theta_params))
-print()
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+if SIM_BACKEND == "hybrid":
+    print(f"Hybrid backend: encoding {N_EVENTS} training and {len(val_events)} validation events...")
+    all_circuits = np.array([preprocess_event(x_raw) for x_raw in events])
+    val_circuits = np.array([preprocess_event(x_raw) for x_raw in val_events])
+    print()
+else:
+    print(f"Pre-building and transpiling circuits ({N_EVENTS} events)...")
+    all_circuits = []
+    for x_raw in tqdm(events, desc="Building", unit="event", leave=True):
+        amplitudes   = preprocess_event(x_raw)
+        theta_params = ParameterVector('theta', N_PARAMS)
+        all_circuits.append((build_event_circuit(amplitudes, theta_params), theta_params))
+    print()
+
+    val_circuits = []
+    for x_raw in tqdm(val_events, desc="Building val", unit="event", leave=True):
+        amplitudes = preprocess_event(x_raw)
+        theta_params = ParameterVector('theta', N_PARAMS)
+        val_circuits.append((build_event_circuit(amplitudes, theta_params), theta_params))
+    print()
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 # Classify each theta parameter by the shift rule its gate requires.
 _dummy_qc = QuantumCircuit(N_QUBITS)
@@ -1068,7 +1154,7 @@ label_width = max(5, n_width)   # "start" is 5 chars; ensures [n=start] aligns w
 
 print(f"Starting training: {n_iter} passes x {N_BATCHES_PER_ITER} batches "
       f"x {batch_size} events/batch")
-print(f"  Simulation : {'statevector (exact)' if USE_STATEVECTOR else f'Nm={Nm} shots'}")
+print(f"  Simulation : {_sim_desc}")
 print(f"  Adam       : sklearn AdamOptimizer, Kingma & Ba 2014  "
       f"alpha={ALPHA}  beta1={BETA1}  beta2={BETA2}\n")
 
@@ -1233,6 +1319,11 @@ results = {
         "Nm"                      : Nm,
         "SIM_SEED"                : SIM_SEED,
         "IBM_BACKEND"             : IBM_BACKEND,
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        "SIM_BACKEND"             : SIM_BACKEND,
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
         "RUN_TAG"                 : RUN_TAG,
     },
     "circuit": {
@@ -1460,7 +1551,12 @@ print(f"  Output folder: {output_dir}/")
 
 if SHOW_ELAPSED_TIME:
     _elapsed  = time.time() - _t_start
-    _sim_info = 'statevector (exact)' if USE_STATEVECTOR else f'Nm={Nm} shots'
+    if USE_STATEVECTOR and SIM_BACKEND == "hybrid":
+        _sim_info = 'hybrid (exact)'
+    elif USE_STATEVECTOR:
+        _sim_info = 'statevector (exact)'
+    else:
+        _sim_info = f'Nm={Nm} shots'
     print(f"\n  Elapsed time : {_elapsed:.1f} s  ({_elapsed/60:.1f} min)")
     print(f"  Per event    : {_elapsed/N_EVENTS:.3f} s/event  "
           f"(N_iter={n_iter}, {_sim_info}, {N_EVENTS} events)")
