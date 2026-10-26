@@ -20,18 +20,22 @@ class ShiftRule(Enum):
 
 
 class Gate(Enum):
-    # (symbol, parameter-shift rule)
-    RX = ("rx", ShiftRule.TWO_TERM)
-    RY = ("ry", ShiftRule.TWO_TERM)
-    RZ = ("rz", ShiftRule.TWO_TERM)
-    CRX = ("crx", ShiftRule.FOUR_TERM)
-    CRZ = ("crz", ShiftRule.FOUR_TERM)
-    H = ("h", ShiftRule.NONE)
-    CX = ("cx", ShiftRule.NONE)
-    CZ = ("cz", ShiftRule.NONE)
+    # (Qiskit method, parameter-shift rule)
+    RX = (QuantumCircuit.rx, ShiftRule.TWO_TERM)
+    RY = (QuantumCircuit.ry, ShiftRule.TWO_TERM)
+    RZ = (QuantumCircuit.rz, ShiftRule.TWO_TERM)
+    CRX = (QuantumCircuit.crx, ShiftRule.FOUR_TERM)
+    CRZ = (QuantumCircuit.crz, ShiftRule.FOUR_TERM)
+    H = (QuantumCircuit.h, ShiftRule.NONE)
+    CX = (QuantumCircuit.cx, ShiftRule.NONE)
+    CZ = (QuantumCircuit.cz, ShiftRule.NONE)
+
+    def __call__(self, *qubits):
+        """Gate.RX(0) -> Operation(Gate.RX, [0])."""
+        return Operation(self, list(qubits))
 
     @property
-    def symbol(self):
+    def add_to_circuit(self):
         return self.value[0]
 
     @property
@@ -72,41 +76,44 @@ class Circuit:
 
     def apply(self, qc: QuantumCircuit, theta, n_layers):
         """Append the circuit to `qc`; theta holds floats or qiskit Parameters."""
-        theta = iter(theta)
+        k = 0  # index of the next theta value
         for op in self.operations(n_layers):
-            gate = getattr(qc, op.gate.symbol)
             if op.gate.is_rotation:
-                gate(next(theta), *op.qubits)
+                # giving the object through its method is the same as calling qc.x(0)
+                # property of a object function see link below
+                # https://docs.python.org/3/tutorial/classes.html#method-objects
+                op.gate.add_to_circuit(qc, theta[k], *op.qubits)  # = qc.rx(theta[k], q)
+                k += 1
             else:
-                gate(*op.qubits)
+                op.gate.add_to_circuit(qc, *op.qubits)  # = qc.cx(control, target)
         return qc
 
 
 # Blocks shared by several circuits.
 RX_RZ_common_pattern = [
-    Operation(Gate.RX, [0]),
-    Operation(Gate.RZ, [0]),
-    Operation(Gate.RX, [1]),
-    Operation(Gate.RZ, [1]),
-    Operation(Gate.RX, [2]),
-    Operation(Gate.RZ, [2]),
-    Operation(Gate.RX, [3]),
-    Operation(Gate.RZ, [3]),
+    Gate.RX(0),
+    Gate.RZ(0),
+    Gate.RX(1),
+    Gate.RZ(1),
+    Gate.RX(2),
+    Gate.RZ(2),
+    Gate.RX(3),
+    Gate.RZ(3),
 ]
 RY_RZ_common_pattern = [
-    Operation(Gate.RY, [0]),
-    Operation(Gate.RZ, [0]),
-    Operation(Gate.RY, [1]),
-    Operation(Gate.RZ, [1]),
-    Operation(Gate.RY, [2]),
-    Operation(Gate.RZ, [2]),
-    Operation(Gate.RY, [3]),
-    Operation(Gate.RZ, [3]),
+    Gate.RY(0),
+    Gate.RZ(0),
+    Gate.RY(1),
+    Gate.RZ(1),
+    Gate.RY(2),
+    Gate.RZ(2),
+    Gate.RY(3),
+    Gate.RZ(3),
 ]
-RX_common_pattern = [Operation(Gate.RX, [q]) for q in range(4)]
-RY_common_pattern = [Operation(Gate.RY, [q]) for q in range(4)]
-RZ_common_pattern = [Operation(Gate.RZ, [q]) for q in range(4)]
-H_common_pattern = [Operation(Gate.H, [q]) for q in range(4)]
+RX_common_pattern = [Gate.RX(q) for q in range(4)]
+RY_common_pattern = [Gate.RY(q) for q in range(4)]
+RZ_common_pattern = [Gate.RZ(q) for q in range(4)]
+H_common_pattern = [Gate.H(q) for q in range(4)]
 
 # Each qubit controls every other one, from q3 down to q0.
 control_gate_common_pattern = [[3, 2], [3, 1], [3, 0], [2, 3], [2, 1], [2, 0],
@@ -122,62 +129,62 @@ CIRCUITS = {
         "RX-RZ on each qubit, CNOT ladder q3->q2->q1->q0",
         layer=RX_RZ_common_pattern
         + [
-            Operation(Gate.CX, [3, 2]),
-            Operation(Gate.CX, [2, 1]),
-            Operation(Gate.CX, [1, 0]),
+            Gate.CX(3, 2),
+            Gate.CX(2, 1),
+            Gate.CX(1, 0),
         ],
     ),
     3: Circuit(
         "RX-RZ on each qubit, CRZ ladder q3->q2->q1->q0",
         layer=RX_RZ_common_pattern
         + [
-            Operation(Gate.CRZ, [3, 2]),
-            Operation(Gate.CRZ, [2, 1]),
-            Operation(Gate.CRZ, [1, 0]),
+            Gate.CRZ(3, 2),
+            Gate.CRZ(2, 1),
+            Gate.CRZ(1, 0),
         ],
     ),
     4: Circuit(
         "RX-RZ on each qubit, CRX ladder q3->q2->q1->q0",
         layer=RX_RZ_common_pattern
         + [
-            Operation(Gate.CRX, [3, 2]),
-            Operation(Gate.CRX, [2, 1]),
-            Operation(Gate.CRX, [1, 0]),
+            Gate.CRX(3, 2),
+            Gate.CRX(2, 1),
+            Gate.CRX(1, 0),
         ],
     ),
     5: Circuit(
         "RX-RZ, CRZ from each qubit to all others, RX-RZ",
         layer=RX_RZ_common_pattern
-        + [Operation(Gate.CRZ, pair) for pair in control_gate_common_pattern]
+        + [Gate.CRZ(*pair) for pair in control_gate_common_pattern]
         + RX_RZ_common_pattern,
     ),
     6: Circuit(
         "RX-RZ, CRX from each qubit to all others, RX-RZ",
         layer=RX_RZ_common_pattern
-        + [Operation(Gate.CRX, pair) for pair in control_gate_common_pattern]
+        + [Gate.CRX(*pair) for pair in control_gate_common_pattern]
         + RX_RZ_common_pattern,
     ),
     7: Circuit(
         "RX-RZ, CRZ (q1->q0, q3->q2), RX-RZ, CRZ (q2->q1)",
         layer=RX_RZ_common_pattern
-        + [Operation(Gate.CRZ, [1, 0]), Operation(Gate.CRZ, [3, 2])]
+        + [Gate.CRZ(1, 0), Gate.CRZ(3, 2)]
         + RX_RZ_common_pattern
-        + [Operation(Gate.CRZ, [2, 1])],
+        + [Gate.CRZ(2, 1)],
     ),
     8: Circuit(
         "RX-RZ, CRX (q1->q0, q3->q2), RX-RZ, CRX (q2->q1)",
         layer=RX_RZ_common_pattern
-        + [Operation(Gate.CRX, [1, 0]), Operation(Gate.CRX, [3, 2])]
+        + [Gate.CRX(1, 0), Gate.CRX(3, 2)]
         + RX_RZ_common_pattern
-        + [Operation(Gate.CRX, [2, 1])],
+        + [Gate.CRX(2, 1)],
     ),
     9: Circuit(
         "H on each qubit, CZ ladder q3->q2->q1->q0, RX on each qubit",
         layer=H_common_pattern
         + [
-            Operation(Gate.CZ, [3, 2]),
-            Operation(Gate.CZ, [2, 1]),
-            Operation(Gate.CZ, [1, 0]),
+            Gate.CZ(3, 2),
+            Gate.CZ(2, 1),
+            Gate.CZ(1, 0),
         ]
         + RX_common_pattern,
     ),
@@ -185,10 +192,10 @@ CIRCUITS = {
         "RY once, then per layer CZ ladder q3->q2->q1->q0 plus CZ(q3,q0), RY",
         pre=RY_common_pattern,
         layer=[
-            Operation(Gate.CZ, [3, 2]),
-            Operation(Gate.CZ, [2, 1]),
-            Operation(Gate.CZ, [1, 0]),
-            Operation(Gate.CZ, [3, 0]),
+            Gate.CZ(3, 2),
+            Gate.CZ(2, 1),
+            Gate.CZ(1, 0),
+            Gate.CZ(3, 0),
         ]
         + RY_common_pattern,
     ),
@@ -196,95 +203,95 @@ CIRCUITS = {
         "RY-RZ, CNOT (q1->q0, q3->q2), RY-RZ on q1 and q2, CNOT (q2->q1)",
         layer=RY_RZ_common_pattern
         + [
-            Operation(Gate.CX, [1, 0]),
-            Operation(Gate.CX, [3, 2]),
-            Operation(Gate.RY, [1]),
-            Operation(Gate.RZ, [1]),
-            Operation(Gate.RY, [2]),
-            Operation(Gate.RZ, [2]),
-            Operation(Gate.CX, [2, 1]),
+            Gate.CX(1, 0),
+            Gate.CX(3, 2),
+            Gate.RY(1),
+            Gate.RZ(1),
+            Gate.RY(2),
+            Gate.RZ(2),
+            Gate.CX(2, 1),
         ],
     ),
     12: Circuit(
         "RY-RZ, CZ (q1,q0 and q3,q2), RY-RZ on q1 and q2, CZ (q2,q1)",
         layer=RY_RZ_common_pattern
         + [
-            Operation(Gate.CZ, [1, 0]),
-            Operation(Gate.CZ, [3, 2]),
-            Operation(Gate.RY, [1]),
-            Operation(Gate.RZ, [1]),
-            Operation(Gate.RY, [2]),
-            Operation(Gate.RZ, [2]),
-            Operation(Gate.CZ, [2, 1]),
+            Gate.CZ(1, 0),
+            Gate.CZ(3, 2),
+            Gate.RY(1),
+            Gate.RZ(1),
+            Gate.RY(2),
+            Gate.RZ(2),
+            Gate.CZ(2, 1),
         ],
     ),
     13: Circuit(
         "RY, CRZ ring, RY, CRZ ring in the other direction",
         layer=RY_common_pattern
         + [
-            Operation(Gate.CRZ, [3, 0]),
-            Operation(Gate.CRZ, [2, 3]),
-            Operation(Gate.CRZ, [1, 2]),
-            Operation(Gate.CRZ, [0, 1]),
+            Gate.CRZ(3, 0),
+            Gate.CRZ(2, 3),
+            Gate.CRZ(1, 2),
+            Gate.CRZ(0, 1),
         ]
         + RY_common_pattern
         + [
-            Operation(Gate.CRZ, [3, 2]),
-            Operation(Gate.CRZ, [0, 3]),
-            Operation(Gate.CRZ, [1, 0]),
-            Operation(Gate.CRZ, [2, 1]),
+            Gate.CRZ(3, 2),
+            Gate.CRZ(0, 3),
+            Gate.CRZ(1, 0),
+            Gate.CRZ(2, 1),
         ],
     ),
     14: Circuit(
         "RY, CRX ring, RY, CRX ring in the other direction",
         layer=RY_common_pattern
         + [
-            Operation(Gate.CRX, [3, 0]),
-            Operation(Gate.CRX, [2, 3]),
-            Operation(Gate.CRX, [1, 2]),
-            Operation(Gate.CRX, [0, 1]),
+            Gate.CRX(3, 0),
+            Gate.CRX(2, 3),
+            Gate.CRX(1, 2),
+            Gate.CRX(0, 1),
         ]
         + RY_common_pattern
         + [
-            Operation(Gate.CRX, [3, 2]),
-            Operation(Gate.CRX, [0, 3]),
-            Operation(Gate.CRX, [1, 0]),
-            Operation(Gate.CRX, [2, 1]),
+            Gate.CRX(3, 2),
+            Gate.CRX(0, 3),
+            Gate.CRX(1, 0),
+            Gate.CRX(2, 1),
         ],
     ),
     15: Circuit(
         "RY, CNOT ring, RY, CNOT ring in the other direction",
         layer=RY_common_pattern
         + [
-            Operation(Gate.CX, [3, 0]),
-            Operation(Gate.CX, [2, 3]),
-            Operation(Gate.CX, [1, 2]),
-            Operation(Gate.CX, [0, 1]),
+            Gate.CX(3, 0),
+            Gate.CX(2, 3),
+            Gate.CX(1, 2),
+            Gate.CX(0, 1),
         ]
         + RY_common_pattern
         + [
-            Operation(Gate.CX, [3, 2]),
-            Operation(Gate.CX, [0, 3]),
-            Operation(Gate.CX, [1, 0]),
-            Operation(Gate.CX, [2, 1]),
+            Gate.CX(3, 2),
+            Gate.CX(0, 3),
+            Gate.CX(1, 0),
+            Gate.CX(2, 1),
         ],
     ),
     16: Circuit(
         "RX-RZ, CRZ (q1->q0, q3->q2, q2->q1)",
         layer=RX_RZ_common_pattern
         + [
-            Operation(Gate.CRZ, [1, 0]),
-            Operation(Gate.CRZ, [3, 2]),
-            Operation(Gate.CRZ, [2, 1]),
+            Gate.CRZ(1, 0),
+            Gate.CRZ(3, 2),
+            Gate.CRZ(2, 1),
         ],
     ),
     17: Circuit(
         "RX-RZ, CRX (q1->q0, q3->q2, q2->q1)",
         layer=RX_RZ_common_pattern
         + [
-            Operation(Gate.CRX, [1, 0]),
-            Operation(Gate.CRX, [3, 2]),
-            Operation(Gate.CRX, [2, 1]),
+            Gate.CRX(1, 0),
+            Gate.CRX(3, 2),
+            Gate.CRX(2, 1),
         ],
     ),
     18: Circuit(
@@ -292,10 +299,10 @@ CIRCUITS = {
         layer=RX_common_pattern
         + RZ_common_pattern
         + [
-            Operation(Gate.CRZ, [3, 0]),
-            Operation(Gate.CRZ, [2, 3]),
-            Operation(Gate.CRZ, [1, 2]),
-            Operation(Gate.CRZ, [0, 1]),
+            Gate.CRZ(3, 0),
+            Gate.CRZ(2, 3),
+            Gate.CRZ(1, 2),
+            Gate.CRZ(0, 1),
         ],
     ),
     19: Circuit(
@@ -303,10 +310,10 @@ CIRCUITS = {
         layer=RX_common_pattern
         + RZ_common_pattern
         + [
-            Operation(Gate.CRX, [3, 0]),
-            Operation(Gate.CRX, [2, 3]),
-            Operation(Gate.CRX, [1, 2]),
-            Operation(Gate.CRX, [0, 1]),
+            Gate.CRX(3, 0),
+            Gate.CRX(2, 3),
+            Gate.CRX(1, 2),
+            Gate.CRX(0, 1),
         ],
     ),
 }
