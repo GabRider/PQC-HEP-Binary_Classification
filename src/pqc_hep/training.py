@@ -168,6 +168,10 @@ class Trainer:
         self.optimizer.update_params([self.theta], [grad])
         return batch_loss
 
+    def measure_loss(self, data: TrainingSet) -> float:
+        """Loss of `data` at the current theta."""
+        return measure_loss(self.qmodel, data, self.theta, self.loss, self.batch_size)
+
     def _parameter_shift(
         self, circuits: list[QuantumCircuit], dloss_dp: np.ndarray
     ) -> np.ndarray:

@@ -33,7 +33,6 @@ from pqc_hep.training import (
     Trainer,
     TrainingSet,
     WeightedBCE,
-    measure_loss,
     resolve_batch_size,
 )
 
@@ -173,7 +172,7 @@ def main(config_path=None):
     n_four = qmodel.shift_rules.count(ShiftRule.FOUR_TERM)
     print(
         f"  Shift rule classification: {n_two} two-term (Rx/Ry/Rz), "
-        f"{n_four} four-term (CRx/CRy/CRz)\n"
+        f"{n_four} four-term (CRx/CRz)\n"
     )
 
     # Evaluation losses, filled by record_eval().
@@ -181,11 +180,7 @@ def main(config_path=None):
     evals = {"batch": {}, "global": {}}
 
     adam = cfg.model.adam
-    sim_info = (
-        "statevector (exact)"
-        if cfg.model.backend.use_statevector
-        else f"Nm={cfg.model.backend.nm} shots"
-    )
+    sim_info = "statevector (exact)" if shots is None else f"Nm={shots} shots"
     print(
         f"Starting training: {n_iter} passes x {n_batches_per_iter} batches "
         f"x {batch_size} events/batch"
@@ -217,17 +212,12 @@ def main(config_path=None):
 
     # "start" evaluations: initial random theta, before any optimizer step.
     if eval_schedule.batch_start or eval_schedule.global_start:
-        record_eval(
-            evals,
-            "start",
-            measure_loss(qmodel, data[:batch_size], trainer.theta, loss, batch_size)
-            if eval_schedule.batch_start
-            else None,
-            measure_loss(qmodel, data, trainer.theta, loss, batch_size)
-            if eval_schedule.global_start
-            else None,
-            n_iter,
-        )
+        batch_loss = global_loss = None  # None = not measured
+        if eval_schedule.batch_start:
+            batch_loss = trainer.measure_loss(data[:batch_size])
+        if eval_schedule.global_start:
+            global_loss = trainer.measure_loss(data)
+        record_eval(evals, "start", batch_loss, global_loss, n_iter)
         print()
 
     with tqdm(total=n_iter * n_batches_per_iter, unit="batch") as bar:
@@ -241,15 +231,12 @@ def main(config_path=None):
             # Batch evaluation: loss of the pass's last batch, before its step.
             # Global evaluation: loss on all the events.
             if n in eval_schedule.batch_passes or n in eval_schedule.global_passes:
-                record_eval(
-                    evals,
-                    str(n),
-                    last_batch_loss if n in eval_schedule.batch_passes else None,
-                    measure_loss(qmodel, data, trainer.theta, loss, batch_size)
-                    if n in eval_schedule.global_passes
-                    else None,
-                    n_iter,
-                )
+                batch_loss = global_loss = None  # None = not measured
+                if n in eval_schedule.batch_passes:
+                    batch_loss = last_batch_loss
+                if n in eval_schedule.global_passes:
+                    global_loss = trainer.measure_loss(data)
+                record_eval(evals, str(n), batch_loss, global_loss, n_iter)
     theta_final = trainer.theta.tolist()
     gate_sequence = qmodel.gate_sequence(theta_final)
 
