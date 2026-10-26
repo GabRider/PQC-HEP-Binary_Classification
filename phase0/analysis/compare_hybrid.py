@@ -29,6 +29,7 @@ def read_settings(folder):
         run["BATCH_SIZE"],
         run["ALPHA"],
         run["FEATURE_SCALING"],
+        run["THETA_INIT_SEED"],
     )
     backend = run.get("SIM_BACKEND", "qiskit")
     return settings, backend
@@ -105,7 +106,7 @@ print(f"{'events':>6} {'epochs':>6} {'b':>5} {'alpha':>6} {'scaling':>7} | "
       f"{'history':>8} {'p_val':>8} {'theta':>8} | {'old time':>10} {'new time':>10}")
 all_ok = True
 for settings, new in hybrid_runs:
-    circuit, layers, n_events, n_iter, b, alpha, scaling = settings
+    circuit, layers, n_events, n_iter, b, alpha, scaling, seed = settings
     old = old_runs.get(settings)
     if old is None:
         print(f"{n_events:>6} {n_iter:>6} {b:>5} {alpha:>6} {str(scaling):>7} | no old run with these settings")
