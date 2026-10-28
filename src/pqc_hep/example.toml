@@ -1,5 +1,5 @@
 # Example run configuration. Every key is optional: a missing key keeps the
-# default from config.py. Usage: python main.py --config example.toml
+# default defined in config/. Usage: python main.py --config example.toml
 
 [data]
 sig_path = "Data/train_sig.csv"      # signal CSV; must exist
@@ -8,6 +8,10 @@ max_events = 1000                    # number of events, or "all"
 balance_classes = false              # equal S and B counts; needs max_events
 event_order = "random"               # "random", "signal_first" or "background_first"
 reshuffle_between_passes = false     # needs event_order = "random"
+feature_scaling = "none"             # "zscore" = (x - mean) / std of the training events, or "none"
+# val_sig_path = "Data/val_sig.csv"  # validation files, never used for the gradient;
+# val_bkg_path = "Data/val_bkg.csv"  # omit both = no validation
+# n_val = 2000                       # random subset of the validation events
 results_dir = "result"               # folder for the run outputs; created if missing
 
 [model.circuit]
@@ -38,8 +42,9 @@ simulator_method = "automatic"       # "automatic", "statevector", "matrix_produ
 # ibm_backend = "ibm_brisbane"       # omit = local AerSimulator; token from IBM_TOKEN env var
 
 [seeds]
-# Omit a seed to draw it at random; the value used is recorded in results.json.
+# Omit a seed to draw it at random; the value used is saved in the TOML copy of the run folder.
 # data_shuffle = 123
 # theta_init = 456
 # pass_reshuffle = 789
 # simulator = 42
+# validation = 1

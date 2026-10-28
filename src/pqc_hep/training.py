@@ -5,11 +5,11 @@ QModel, a loss, an optimizer, the initial theta), so each one can be swapped.
 """
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 from qiskit import QuantumCircuit
-from sklearn.metrics import log_loss
+from sklearn.metrics import log_loss, roc_auc_score
 
 from pqc_hep.circuits import ShiftRule
 from pqc_hep.config.model import EvaluationConfig
@@ -39,6 +39,9 @@ class TrainingSet:
 @dataclass
 class EvalSchedule:
     """Passes where the losses are measured, and whether "start" is requested.
+    "start" measures the loss with the initial random theta, before any
+    optimizer step: the reference that shows how much the training improves it.
+    In measure_global / measure_batch, pass 0 = "start".
 
     The values are checked by the config (ModelConfig._evaluation_fits_n_iter).
     """
@@ -47,6 +50,12 @@ class EvalSchedule:
     global_start: bool
     batch_passes: set[int]
     batch_start: bool
+
+    def measure_global(self, n: int) -> bool:
+        return self.global_start if n == 0 else n in self.global_passes
+
+    def measure_batch(self, n: int) -> bool:
+        return self.batch_start if n == 0 else n in self.batch_passes
 
     @classmethod
     def from_config(cls, eval_cfg: EvaluationConfig, n_iter: int) -> "EvalSchedule":
@@ -111,16 +120,51 @@ class WeightedBCE:
         return events.weights * (-z / p_clip + (1 - z) / (1 - p_clip))
 
 
-def measure_loss(
-    qmodel: QModel, data: TrainingSet, theta: np.ndarray, loss, chunk: int
-) -> float:
-    """Loss of `data` at the given theta. The circuits run in chunk-sized pieces,
-    each piece in a single backend.run() call."""
-    p = np.empty(len(data))
-    for s in range(0, len(data), chunk):
-        e = min(s + chunk, len(data))
-        p[s:e] = qmodel.run(data.circuits[s:e], theta)
-    return loss.value(p, data.events)
+@dataclass
+class Metrics:
+    """Scores of the predictions p on a set of events. To add a score: one
+    field and one line in from_predictions."""
+
+    loss: float
+    auc: float
+
+    @classmethod
+    def from_predictions(cls, p: np.ndarray, events: Events, loss) -> "Metrics":
+        return cls(
+            loss=loss.value(p, events),
+            auc=float(roc_auc_score(events.labels, p, sample_weight=events.weights)),
+        )
+
+    def __str__(self) -> str:
+        return "  ".join(f"{name}={value:.4f}" for name, value in asdict(self).items())
+
+
+@dataclass
+class Evaluation:
+    """One evaluation of the training; None = not measured."""
+
+    n: int  # pass number; 0 = "start", before any optimizer step
+    batch_loss: float | None
+    train: Metrics | None
+    val: Metrics | None
+
+    @property
+    def key(self) -> str:
+        """Name of the pass in results.json and on screen: "start" or the number."""
+        return "start" if self.n == 0 else str(self.n)
+
+    def as_row(self, n_batches_per_iter: int) -> dict[str, float]:
+        """Metrics of this evaluation by column name: train_loss, val_auc, ..."""
+        row = {
+            "epoch": self.n,
+            "step": self.n * n_batches_per_iter,
+            "train_loss": self.train.loss,
+            "train_auc": self.train.auc,
+        }
+        if self.val is not None:
+            row["val_loss"] = self.val.loss
+            row["val_auc"] = self.val.auc
+        return row
 
 
 # --- Trainer -----------------------------------------------------------------
@@ -168,9 +212,21 @@ class Trainer:
         self.optimizer.update_params([self.theta], [grad])
         return batch_loss
 
+    def predict(self, data: TrainingSet) -> np.ndarray:
+        """P(|1>) of each event at the current theta, batch_size circuits per run."""
+        p = np.empty(len(data))
+        for s in range(0, len(data), self.batch_size):
+            e = min(s + self.batch_size, len(data))
+            p[s:e] = self.qmodel.run(data.circuits[s:e], self.theta)
+        return p
+
     def measure_loss(self, data: TrainingSet) -> float:
         """Loss of `data` at the current theta."""
-        return measure_loss(self.qmodel, data, self.theta, self.loss, self.batch_size)
+        return self.loss.value(self.predict(data), data.events)
+
+    def metrics(self, data: TrainingSet) -> Metrics:
+        """Loss and AUC of `data` at the current theta."""
+        return Metrics.from_predictions(self.predict(data), data.events, self.loss)
 
     def _parameter_shift(
         self, circuits: list[QuantumCircuit], dloss_dp: np.ndarray

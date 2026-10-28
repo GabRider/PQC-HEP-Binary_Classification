@@ -9,14 +9,20 @@ from pqc_hep.config.base import Section
 
 
 class DataConfig(Section):
-    # strict=False lets TOML strings become paths; the files must exist.
+    # signal variable declaration
     sig_path: FilePath = Field(Path("Data/train_sig.csv"), strict=False)
     bkg_path: FilePath = Field(Path("Data/train_bkg.csv"), strict=False)
     max_events: PositiveInt | Literal["all"] = 1000
-    balance_classes: bool = False  # equal S and B counts; needs max_events
+    # validation set declaration
+    val_sig_path: FilePath | None = Field(None, strict=False)
+    val_bkg_path: FilePath | None = Field(None, strict=False)
+    n_val: PositiveInt = 2000
+    # data manipulation options
+    feature_scaling: Literal["zscore", "none"] = "none"
+    balance_classes: bool = False
     event_order: Literal["random", "signal_first", "background_first"] = "random"
     reshuffle_between_passes: bool = False
-    # Folder where the run folders are written; created if missing.
+    # output information
     results_dir: Path = Field(Path("result"), strict=False)
 
     @property
@@ -36,4 +42,10 @@ class DataConfig(Section):
     def _balance_needs_max_events(self):
         if self.balance_classes and self.max_events == "all":
             raise ValueError("balance_classes=true requires max_events to be a number.")
+        return self
+
+    @model_validator(mode="after")
+    def _val_needs_both_files(self):
+        if (self.val_sig_path is None) != (self.val_bkg_path is None):
+            raise ValueError("val_sig_path and val_bkg_path must be given together.")
         return self

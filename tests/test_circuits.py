@@ -1,13 +1,14 @@
-"""circuits.py builds the same gates as Adriano's library (tests/original_circuits.py).
+"""circuits.py builds the same gates as Adriano's library
+(tests/reference/original_circuits.py).
 
 Excluded by default; run it with:
     uv run pytest -m circuit
 """
 
-import original_circuits
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import ParameterVector
+from reference import original_circuits
 
 from pqc_hep.circuits import CIRCUITS
 

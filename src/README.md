@@ -17,6 +17,7 @@ src
 ├── pqc_hep
 │   ├── config/        # reads and validates the TOML run configuration
 │   ├── example.toml   # example configuration, every key with its default
+│   ├── phase0.toml    # default settings of the phase-0 script
 │   ├── main.py        # runs the training from start to end
 │   ├── data.py        # loads and prepares the events
 │   ├── circuits.py    # the 19 variational circuits W(θ)
@@ -24,6 +25,7 @@ src
 │   ├── training.py    # loss, gradient and optimization of θ
 │   ├── output.py      # results files and final summary
 │   ├── classifier.py  # standalone classifier copied into each run folder
+│   ├── utils/         # standalone tools, e.g. convert_phase0.py (old runs)
 │   └── Data/          # CSV event files (not versioned)
 └── README.md
 ```
@@ -48,8 +50,8 @@ The configuration is checked when it is loaded, by the rules of `base.py`: an
 unknown key, a wrong type or an invalid value stops the program with a message
 naming the field, for example `model.adam.alpha: Input should be greater than 0`.
 Hence a mistake in the file shows up before training starts. A seed missing
-from the file is drawn at random and recorded in `results.json`, so any run can
-be repeated.
+from the file is drawn at random and saved in the TOML copy of the run folder,
+so any run can be repeated.
 
 Where to change:
 
@@ -66,7 +68,7 @@ Where to change:
 `main.py` contains no computation of its own. It calls the other files in the
 order of the run: configuration, data, circuits, training, outputs. It also
 prints the effective configuration at the start, a progress bar during
-training, and the losses at the passes requested in the configuration.
+training, and the losses and AUC at the passes requested in the configuration.
 
 Where to change:
 
@@ -81,7 +83,11 @@ The events come from two CSV files, one for signal and one for background.
 as background events if `balance_classes` is set), and puts them in the
 training order chosen in the configuration. The event weights are then rescaled
 so that signal and background have the same total weight, which keeps the more
-numerous class from dominating the loss. Last, `to_amplitudes()` prepares the
+numerous class from dominating the loss. With a validation set, `n_val` events
+are drawn the same way from their own files and never used for the gradient.
+With `feature_scaling = "zscore"`, the features are then centered and scaled
+with the mean and std of the training events, and the validation events reuse
+these values. Last, `to_amplitudes()` prepares the
 quantum encoding: the 12 features are padded with zeros to 16 values (the
 2^4 amplitudes of 4 qubits) and normalized to unit length.
 
@@ -89,8 +95,9 @@ Where to change:
 
 - Event selection or ordering: `select_events()`, `order_events()`.
 - Weighting: `normalise_weights()`.
-- Encoding of the features: `to_amplitudes()`. `classifier.py` has its own copy
-  of this function (`preprocess()`), which must be changed the same way.
+- Feature scaling: `mean_std()`, `Events.zscore()`.
+- Encoding of the features: `to_amplitudes()`. `classifier.py` repeats the
+  z-score and this encoding in `preprocess()`, which must be changed the same way.
 
 ## `circuits.py`
 
@@ -154,17 +161,24 @@ Where to change:
   sklearn's `SGDOptimizer`, given to the `Trainer` in `main.py`.
 - When the losses are measured: `EvalSchedule`, filled from the `[model.evaluation]`
   table.
+- New score (e.g. accuracy): a field and a line in `Metrics.from_predictions()`.
+  It is then printed. For `history.csv`, it also needs a column in
+  `Evaluation.as_row()` and `HISTORY_COLUMNS`.
 
 ## `output.py`
 
-At the end of the run, `output.py` writes four files to the run folder:
+At the end of the run, `output.py` writes these files to the run folder:
 
 - `results.json`: the settings of the run, the final θ and the losses measured
   during training;
 - `model.json`: the trained gates and 10 training events with their P(signal);
 - the effective configuration as TOML, named like the `--config` file
   (`config.toml` without one), seeds included;
-- a copy of `classifier.py`.
+- a copy of `classifier.py`;
+- `history.csv`: loss and AUC of the training (and validation) events at each
+  global evaluation;
+- `val_predictions.csv`, with a validation set: label, weight and final
+  P(signal) of each validation event.
 
 It then prints a summary: circuit, number of events, final θ, last losses and
 run time.
@@ -174,6 +188,8 @@ Where to change:
 - New value in `results.json`: `build_results()`.
 - New value in `model.json`: `build_model()`. `classifier.py` reads this file,
   so a renamed or removed key must be changed there too.
+- Columns of `history.csv`: `HISTORY_COLUMNS`, and `Evaluation.as_row()` in
+  `training.py`.
 - Name of the run folder: `run_dir_name()`.
 - Final summary: `print_summary()`.
 

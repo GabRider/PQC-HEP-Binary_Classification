@@ -12,8 +12,9 @@ def _random_seed() -> int:
 
 
 class SeedsConfig(Section):
-    # Missing seeds are drawn at random and recorded in results.json.
+    # Missing seeds are drawn at random and saved in the TOML copy of the run folder.
     data_shuffle: int = Field(default_factory=_random_seed)
     theta_init: int = Field(default_factory=_random_seed)
     pass_reshuffle: int = Field(default_factory=_random_seed)
     simulator: int = Field(default_factory=_random_seed, ge=0)
+    validation: int = Field(default_factory=_random_seed)

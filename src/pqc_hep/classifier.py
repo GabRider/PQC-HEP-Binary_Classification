@@ -27,8 +27,15 @@ BACKEND = MODEL["backend"]
 
 
 def preprocess(features):
-    """Pad the features with zeros to 2**n_qubits values, then normalise."""
+    """z-score with the training mean and std (if the training used it), then
+    pad the features with zeros to 2**n_qubits values and normalise."""
+    zscore = MODEL["zscore"]
+    if zscore is not None:
+        features = (features - np.asarray(zscore["mean"])) / np.asarray(zscore["std"])
+    # padding with zero. needed for AmplitudeEmbedding
     x = np.concatenate([features, np.zeros(2 ** MODEL["n_qubits"] - MODEL["n_feat"])])
+    # L2 norm. For a 1-D vector it equals the Frobenius norm used by numpy for matrices.
+    # https://mathworld.wolfram.com/FrobeniusNorm.html
     norm = np.linalg.norm(x)
     if norm < 1e-12:
         raise ValueError("Feature vector has zero norm and cannot be normalised.")

@@ -22,6 +22,7 @@ from pqc_hep.circuits import ShiftRule
 from pqc_hep.config import load as load_config
 from pqc_hep.data import (
     load_events,
+    mean_std,
     normalise_weights,
     order_events,
     select_events,
@@ -30,6 +31,7 @@ from pqc_hep.data import (
 from pqc_hep.quantum import QModel, make_backend
 from pqc_hep.training import (
     EvalSchedule,
+    Evaluation,
     Trainer,
     TrainingSet,
     WeightedBCE,
@@ -41,20 +43,22 @@ def _show_loss(loss):
     return "--------" if loss is None else f"{loss:.6f}"
 
 
-def record_eval(evals, key, batch_loss, global_loss, n_iter):
-    """Save the losses of one evaluation ("start" or the pass number) in
-    evals["batch"] and evals["global"], and print them on one line;
-    None = not measured at this evaluation."""
-    if batch_loss is not None:
-        evals["batch"][key] = float(batch_loss)
-    if global_loss is not None:
-        evals["global"][key] = float(global_loss)
+def record_eval(evals, evaluation, n_iter):
+    """Add one evaluation to evals and print it."""
+    evals.append(evaluation)
+    global_loss = None if evaluation.train is None else evaluation.train.loss
 
+    # TODO: reworking tqdm usage in the whole project
     width = max(5, len(str(n_iter)))  # "start" is 5 chars: aligns [n=start], [n=  N]
     tqdm.write(
-        f"  [n={key:>{width}}]  "
-        f"batch = {_show_loss(batch_loss)}   GLOBAL = {_show_loss(global_loss)}"
+        f"  [n={evaluation.key:>{width}}]  "
+        f"batch = {_show_loss(evaluation.batch_loss)}   "
+        f"GLOBAL = {_show_loss(global_loss)}"
     )
+    if evaluation.train is not None:
+        tqdm.write(f"           train {evaluation.train}")
+    if evaluation.val is not None:
+        tqdm.write(f"           val   {evaluation.val}")
 
 
 def parse_args():
@@ -95,7 +99,7 @@ def main(config_path=None):
     eval_schedule = EvalSchedule.from_config(cfg.model.evaluation, n_iter)
     global_at = sorted(eval_schedule.global_passes)
     batch_at = sorted(eval_schedule.batch_passes)
-
+    # TODO: rework printing/logging stuff
     rule = "=" * 62
     print(f"""
 {rule}
@@ -114,24 +118,44 @@ def main(config_path=None):
     # DATA LOADING
     # =========================================================================
     # Reads the signal and background CSV files, selects and orders the events,
-    # normalises their weights, and resolves batch_size to an event count.
+    # normalises their weights, loads the validation events (if any), applies
+    # the z-score (if set), and resolves batch_size to an event count.
 
     print("Loading data...")
     sig, bkg = load_events(cfg.data.sig_path, cfg.data.bkg_path)
-    rng = np.random.default_rng(seed=cfg.seeds.data_shuffle)
+    data_rng = np.random.default_rng(seed=cfg.seeds.data_shuffle)
     events = select_events(
-        sig, bkg, cfg.data.event_limit, cfg.data.balance_classes, rng
+        sig, bkg, cfg.data.event_limit, cfg.data.balance_classes, data_rng
     )
     events = order_events(events, cfg.data.event_order)
     events = normalise_weights(events)
     n_events = len(events)
     n_loaded = len(sig) + len(bkg)
-    n_sig = int((events.labels == 1).sum())
     n_bkg = int((events.labels == 0).sum())
 
-    print(f"  Loaded : {n_loaded} events ({len(sig)} signal, {len(bkg)} background)")
-    print(f"  Using  : {n_events} events ({n_sig} signal, {n_bkg} background)")
+    print(
+        f"  Loaded     : {n_loaded} events ({len(sig)} signal, {len(bkg)} background)"
+    )
+    print(f"  Using      : {events}")
     print(f"  Weight normalisation: sum(w_S) = sum(w_B) = {n_bkg}")
+
+    val = None
+    if cfg.data.val_sig_path is not None:
+        val_sig, val_bkg = load_events(cfg.data.val_sig_path, cfg.data.val_bkg_path)
+        val_rng = np.random.default_rng(seed=cfg.seeds.validation)
+        val = select_events(val_sig, val_bkg, cfg.data.n_val, False, val_rng)
+        val = normalise_weights(val)
+        print(f"  Validation : {val}")
+
+    raw_events = events  # before the z-score: the classifier examples take raw features
+    zscore = None
+    if cfg.data.feature_scaling == "zscore":
+        feature_mean, feature_std = mean_std(events.features)
+        zscore = {"mean": feature_mean.tolist(), "std": feature_std.tolist()}
+        events = events.zscore(feature_mean, feature_std)
+        if val is not None:
+            val = val.zscore(feature_mean, feature_std)
+        print("  Feature scaling: z-score (mean and std of the training events)")
 
     batch_size = resolve_batch_size(cfg.model.training.batch_size, n_events)
     if isinstance(cfg.model.training.batch_size, float):
@@ -162,11 +186,18 @@ def main(config_path=None):
     # TRAINING SETUP
     # =========================================================================
     # Build and transpile one full circuit per event (embedding + variational
-    # form). All N_iter passes reuse these circuits by binding the theta values.
+    # form), for the training and validation events. All N_iter passes reuse
+    # these circuits by binding the theta values.
 
     print(f"Building and transpiling circuits ({n_events} events)...")
     all_circuits = qmodel.build(events.features)
     print(f"  Done: {len(all_circuits)} circuits transpiled.\n")
+
+    val_data = None
+    if val is not None:
+        print(f"Building and transpiling validation circuits ({len(val)} events)...")
+        val_data = TrainingSet(val, qmodel.build(val.features))
+        print()
 
     n_two = qmodel.shift_rules.count(ShiftRule.TWO_TERM)
     n_four = qmodel.shift_rules.count(ShiftRule.FOUR_TERM)
@@ -175,9 +206,8 @@ def main(config_path=None):
         f"{n_four} four-term (CRx/CRz)\n"
     )
 
-    # Evaluation losses, filled by record_eval().
-    # Key: "start" or str(pass number); value: loss (float).
-    evals = {"batch": {}, "global": {}}
+    # One Evaluation per measured pass, filled by record_eval().
+    evals: list[Evaluation] = []
 
     adam = cfg.model.adam
     sim_info = "statevector (exact)" if shots is None else f"Nm={shots} shots"
@@ -210,41 +240,43 @@ def main(config_path=None):
     trainer = Trainer(qmodel, loss, optimizer, theta0, batch_size)
     data = TrainingSet(events, all_circuits)
 
-    # "start" evaluations: initial random theta, before any optimizer step.
-    if eval_schedule.batch_start or eval_schedule.global_start:
-        batch_loss = global_loss = None  # None = not measured
-        if eval_schedule.batch_start:
-            batch_loss = trainer.measure_loss(data[:batch_size])
-        if eval_schedule.global_start:
-            global_loss = trainer.measure_loss(data)
-        record_eval(evals, "start", batch_loss, global_loss, n_iter)
-        print()
-
     with tqdm(total=n_iter * n_batches_per_iter, unit="batch") as bar:
-        for n in range(1, n_iter + 1):
-            bar.set_description(f"Pass {n:{len(str(n_iter))}d}/{n_iter}")
-            reshuffle = cfg.data.reshuffle_between_passes and n > 1
-            seed = cfg.seeds.pass_reshuffle + n if reshuffle else None
-            for batch in trainer.batches(data, seed):
-                last_batch_loss = trainer.step(batch)
-                bar.update()
+        for n in range(n_iter + 1):  # n = 0: "start", before any optimizer step
+            if n > 0:
+                bar.set_description(f"Pass {n:{len(str(n_iter))}d}/{n_iter}")
+                reshuffle = cfg.data.reshuffle_between_passes and n > 1
+                seed = cfg.seeds.pass_reshuffle + n if reshuffle else None
+                for batch in trainer.batches(data, seed):
+                    last_batch_loss = trainer.step(batch)
+                    bar.update()
+
+            measure_batch = eval_schedule.measure_batch(n)
+            measure_global = eval_schedule.measure_global(n)
+            if not (measure_batch or measure_global):
+                continue
+            batch_loss = train = val_metrics = None  # None = not measured
             # Batch evaluation: loss of the pass's last batch, before its step.
-            # Global evaluation: loss on all the events.
-            if n in eval_schedule.batch_passes or n in eval_schedule.global_passes:
-                batch_loss = global_loss = None  # None = not measured
-                if n in eval_schedule.batch_passes:
+            # At start no batch is trained yet: loss of the first batch.
+            if measure_batch:
+                if n == 0:
+                    batch_loss = trainer.measure_loss(data[:batch_size])
+                else:
                     batch_loss = last_batch_loss
-                if n in eval_schedule.global_passes:
-                    global_loss = trainer.measure_loss(data)
-                record_eval(evals, str(n), batch_loss, global_loss, n_iter)
+            # Global evaluation: loss and AUC on all the events (and validation).
+            if measure_global:
+                train = trainer.metrics(data)
+                if val_data is not None:
+                    val_metrics = trainer.metrics(val_data)
+            record_eval(evals, Evaluation(n, batch_loss, train, val_metrics), n_iter)
     theta_final = trainer.theta.tolist()
     gate_sequence = qmodel.gate_sequence(theta_final)
 
     # =========================================================================
     # OUTPUT GENERATION
     # =========================================================================
-    # Writes results.json, model.json, the effective TOML and a copy of
-    # classifier.py to the run folder, then prints the final summary (output.py).
+    # Writes results.json, model.json, the effective TOML, a copy of
+    # classifier.py, history.csv and val_predictions.csv (with validation) to the
+    # run folder, then prints the final summary (output.py).
 
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
@@ -260,8 +292,7 @@ def main(config_path=None):
         eval_schedule,
         theta_final,
         gate_sequence,
-        evals["global"],
-        evals["batch"],
+        evals,
     )
     # model.json examples: the first 5 signal and 5 background training events.
     example_idx = np.array(
@@ -272,9 +303,12 @@ def main(config_path=None):
     )
     example_p = qmodel.run([all_circuits[i] for i in example_idx], theta_final)
     model = output.build_model(
-        cfg, timestamp, gate_sequence, events[example_idx], example_p
+        cfg, timestamp, gate_sequence, raw_events[example_idx], example_p, zscore
     )
     output.save(output_dir, results, model, cfg, config_path)
+    output.save_history(output_dir, evals, n_batches_per_iter)
+    if val_data is not None:
+        output.save_val_predictions(output_dir, val, trainer.predict(val_data))
     output.print_summary(results, output_dir, time.time() - t_start)
 
 

@@ -1,4 +1,5 @@
-"""Training events: loading from the CSV files."""
+"""Events: loading from the CSV files, selection, ordering, weights, z-score
+and amplitude encoding."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -6,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 # When needed move it into the TOML config file, for now it's a constant in the code.
-N_FEAT = 12  # features per event in the CSV files
+N_FEAT = 12
 
 
 @dataclass
@@ -34,8 +35,16 @@ class Events:
             np.concatenate([self.labels, other.labels]),
         )
 
+    def zscore(self, mean: np.ndarray, std: np.ndarray) -> "Events":
+        """Events with features (x - mean) / std."""
+        return Events((self.features - mean) / std, self.weights, self.labels)
+
     def __len__(self) -> int:
         return len(self.labels)
+
+    def __str__(self) -> str:
+        n_sig = int((self.labels == 1).sum())
+        return f"{len(self)} events ({n_sig} signal, {len(self) - n_sig} background)"
 
     def __getitem__(self, idx: np.ndarray | slice) -> "Events":
         """Events selected by an index array, a mask or a slice."""
@@ -109,10 +118,20 @@ def normalise_weights(events: Events) -> Events:
     return Events(events.features, weights, events.labels)
 
 
+def mean_std(features: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Mean and std of each feature. Measured on the training events only: the
+    validation events and the classifier reuse these values."""
+    std = features.std(axis=0)
+    std[std == 0] = 1.0  # avoids a division by zero for a constant feature
+    return features.mean(axis=0), std
+
+
 def to_amplitudes(x: np.ndarray, n_dim: int) -> np.ndarray:
     """Amplitudes of one event's quantum state: the features padded with zeros
     to n_dim values, then normalised to unit length."""
     x_padded = np.concatenate([x, np.zeros(n_dim - len(x))])
+    # L2 norm. For a 1-D vector it equals the Frobenius norm used by numpy for matrices.
+    # https://mathworld.wolfram.com/FrobeniusNorm.html
     norm = np.linalg.norm(x_padded)
     if norm < 1e-12:
         raise ValueError("Feature vector has zero norm and cannot be normalised.")

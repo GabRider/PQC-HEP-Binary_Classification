@@ -1,0 +1,26 @@
+# Default settings of the phase-0 script (PQC_phase0.py): z-score, validation
+# set, loss and AUC after every epoch. Usage: python main.py --config phase0.toml
+
+[data]
+sig_path = "Data/train_sig.csv"
+bkg_path = "Data/train_bkg.csv"
+max_events = "all"
+feature_scaling = "zscore"
+val_sig_path = "Data/val_sig.csv"
+val_bkg_path = "Data/val_bkg.csv"
+n_val = 2000
+
+[model.training]
+n_iter = 10
+batch_size = 0.1
+
+[model.evaluation]
+global_step = 1                      # train and validation metrics after every epoch
+
+[model.backend]
+use_statevector = true
+
+[seeds]
+data_shuffle = 1
+theta_init = 1
+validation = 1                       # phase 0 draws the validation subset with the data shuffle seed

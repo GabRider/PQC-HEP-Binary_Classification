@@ -31,8 +31,7 @@ line-length = 88
 # Legacy code from the original project: excluded until it is cleaned up.
 extend-exclude = [
   "adriano_code",
-  "tests/original.py",
-  "tests/original_circuits.py",
+  "tests/reference",
 ]
 # Apply the excludes also when pre-commit passes file names explicitly.
 force-exclude = true
@@ -46,5 +45,6 @@ markers = [
   "refactoring: training gives the same results as Adriano's code (needs src/pqc_hep/Data/)",
   "classifier: classifier.py gives the same predictions as Adriano's (needs src/pqc_hep/Data/)",
   "circuit: circuits.py builds the same gates as Adriano's circuits library",
+  "phase0: training, outputs and classifier match the phase-0 script (needs src/pqc_hep/Data/)",
 ]
-addopts = "-m 'not refactoring and not classifier and not circuit'"
+addopts = "-m 'not refactoring and not classifier and not circuit and not phase0'"
