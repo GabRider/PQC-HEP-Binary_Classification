@@ -136,11 +136,12 @@ DATA_FOLDER     = "../Data"                      # folder containing the CSV fil
 SIG_FILE        = "train_sig.csv"               # signal CSV filename (relative to DATA_FOLDER)
 BKG_FILE        = "train_bkg.csv"              # background CSV filename (relative to DATA_FOLDER)
 MAX_EVENTS      = None                          # total events to use; None = use all events
-BALANCE_CLASSES = False                          # if True, use equal S and B counts; requires MAX_EVENTS != None
+BALANCE_CLASSES = True                          # if True, use equal S and B counts; requires MAX_EVENTS != None
 FEATURE_SCALING = "zscore"                      # "zscore" or None (no scaling)
 VAL_SIG_FILE    = "val_sig.csv"                 # validation signal CSV (relative to DATA_FOLDER)
 VAL_BKG_FILE    = "val_bkg.csv"                 # validation background CSV
-N_VAL           = 2000                          # number of validation events (random subset)
+N_VAL           = None                          # number of validation events. None = same as training
+BALANCE_VAL = True                             # if True, validation has N_VAL/2 background and N_VAL/2 signal
 
 # Event ordering.
 # Controls the order and randomisation of training events.
@@ -717,8 +718,23 @@ val_events  = np.array(vs_feats + vb_feats)
 val_weights = np.array(vs_w + vb_w, dtype=float)
 val_labels  = np.array(vs_l + vb_l, dtype=float)
 
+
+if N_VAL is None:
+    N_VAL = N_EVENTS
 rng_val = np.random.default_rng(seed=DATA_SHUFFLE_SEED)
-val_idx = rng_val.permutation(len(val_events))[:N_VAL]
+if BALANCE_VAL:
+    n_each    = N_VAL // 2
+    available = min(len(vs_feats), len(vb_feats))
+    if n_each > available:
+        print(f"Error: BALANCE_VAL requested {n_each} per class but only "
+              f"{available} events available. Set N_VAL <= {2*available}.")
+        sys.exit(1)
+    s_idx   = rng_val.permutation(len(vs_feats))[:n_each]
+    b_idx   = len(vs_feats) + rng_val.permutation(len(vb_feats))[:n_each]
+    val_idx = rng_val.permutation(np.concatenate([s_idx, b_idx]))
+else:
+    val_idx = rng_val.permutation(len(val_events))[:N_VAL]
+
 val_events  = val_events[val_idx]
 val_weights = val_weights[val_idx]
 val_labels  = val_labels[val_idx]
@@ -1272,6 +1288,7 @@ results = {
         "n_events_used"           : N_EVENTS,
         "max_events_limit"        : max_events,
         "BALANCE_CLASSES"         : BALANCE_CLASSES,
+        "BALANCE_VAL"             : BALANCE_VAL,
         "FEATURE_SCALING"         : FEATURE_SCALING,
         "feature_mean"            : FEAT_MEAN.tolist() if FEAT_MEAN is not None else None,
         "feature_std"             : FEAT_STD.tolist() if FEAT_STD is not None else None,
