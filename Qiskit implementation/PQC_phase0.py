@@ -268,6 +268,8 @@ SHOW_ELAPSED_TIME = True
 #         circuit{N}_layers{L}_{iter}iter_batch{batch}_{timestamp}
 # string: folder name becomes {RUN_TAG}_circuit{N}_layers{L}_{iter}iter_batch{batch}_{timestamp}
 RUN_TAG = None
+# Automatically generate diagnostic plots after training.
+GENERATE_PLOTS = True  #only generates plots if True
 
 # =============================================================================
 # END OF USER SETTINGS
@@ -1166,17 +1168,38 @@ global_eval_results = {}   # key: "start" or str(n_iter) -> loss value (float)
 batch_eval_results  = {}   # key: "start" or str(n_iter) -> loss value (float)
 
 history = []   # one entry per epoch, written to history.csv at the end
+train_p_final = None
 
 def record_epoch(epoch):
-    tr_loss, tr_auc, _    = evaluate_set(all_circuits, labels, weights, theta_current)
-    va_loss, va_auc, va_p = evaluate_set(val_circuits, val_labels, val_weights, theta_current)
-    history.append({"epoch": epoch, "step": epoch * N_BATCHES_PER_ITER,
-                    "train_loss": tr_loss, "train_auc": tr_auc,
-                    "val_loss": va_loss, "val_auc": va_auc})
-    tqdm.write(f"  [epoch {epoch:>3}]  train loss={tr_loss:.4f} auc={tr_auc:.4f}"
-               f"   val loss={va_loss:.4f} auc={va_auc:.4f}")
-    return va_p
+    global train_p_final
 
+    tr_loss, tr_auc, tr_p = evaluate_set(
+        all_circuits, labels, weights, theta_current
+    )
+
+    va_loss, va_auc, va_p = evaluate_set(
+        val_circuits, val_labels, val_weights, theta_current
+    )
+
+    history.append({
+        "epoch": epoch,
+        "step": epoch * N_BATCHES_PER_ITER,
+        "train_loss": tr_loss,
+        "train_auc": tr_auc,
+        "val_loss": va_loss,
+        "val_auc": va_auc
+    })
+
+    if GENERATE_PLOTS and epoch == n_iter:
+        train_p_final = tr_p.copy()
+
+    tqdm.write(
+        f"  [epoch {epoch:>3}]  "
+        f"train loss={tr_loss:.4f} auc={tr_auc:.4f}"
+        f"   val loss={va_loss:.4f} auc={va_auc:.4f}"
+    )
+
+    return va_p
 
 n_width     = len(str(n_iter))
 label_width = max(5, n_width)   # "start" is 5 chars; ensures [n=start] aligns with [n=  N]
@@ -1388,10 +1411,23 @@ pred_path = os.path.join(output_dir, "val_predictions.csv")
 with open(pred_path, "w") as f:
     f.write("label,weight,p\n")
     for z, w, p in zip(val_labels, val_weights, val_p_final):
-        f.write(f"{int(z)},{w:.6e},{p:.6f}\n")
+        f.write(f"{int(z)},{w:.16g},{p:.16g}\n")
 
 print(f"  History      : {hist_path}")
 print(f"  Val preds    : {pred_path}")
+
+if GENERATE_PLOTS:
+    train_pred_path = os.path.join(
+        output_dir, "train_predictions.csv"
+    )
+
+    with open(train_pred_path, "w") as f:
+        f.write("label,weight,p\n")
+
+        for z, w, p in zip(labels, weights, train_p_final):
+            f.write(f"{int(z)},{w:.16g},{p:.16g}\n")
+
+    print(f"  Train preds  : {train_pred_path}")
 
 
 # --- Standalone classifier script --------------------------------------------
@@ -1560,6 +1596,22 @@ classifier_path = os.path.join(output_dir, "classifier.py")
 with open(classifier_path, "w") as f:
     f.write(classifier_script)
 print(f"  [2/2] Classifier   : {classifier_path}")
+
+# --- Automatic diagnostic plots ----------------------------------------------
+
+if GENERATE_PLOTS:
+    print("\nGenerating diagnostic plots...")
+
+    try:
+        from plot_training_results import generate_all_plots
+
+        plots_dir = generate_all_plots(output_dir)
+
+        print(f"  Plots saved to: {plots_dir}")
+
+    except Exception as exc:
+        print(f"  WARNING: Plot generation failed: {exc}")
+        print("  Training results have already been saved.")
 
 # --- Final summary -----------------------------------------------------------
 
