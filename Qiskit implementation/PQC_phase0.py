@@ -140,7 +140,8 @@ DATA_FOLDER     = "../Data"                      # folder containing the CSV fil
 SIG_FILE        = "train_sig.csv"               # signal CSV filename (relative to DATA_FOLDER)
 BKG_FILE        = "train_bkg.csv"              # background CSV filename (relative to DATA_FOLDER)
 MAX_EVENTS      = None                          # total events to use; None = use all events
-BALANCE_CLASSES = False                          # if True, use equal S and B counts; requires MAX_EVENTS != None
+BALANCE_CLASSES = True                          # if True, use equal S and B counts; requires MAX_EVENTS != None
+BALANCE_VAL_CLASSES = True        # Balance validation classes independently
 FEATURE_SCALING = "zscore"                      # "zscore" or None (no scaling)
 VAL_SIG_FILE    = "val_sig.csv"                 # validation signal CSV (relative to DATA_FOLDER)
 VAL_BKG_FILE    = "val_bkg.csv"                 # validation background CSV
@@ -567,6 +568,7 @@ print(f"  Signal file       : {signal_file}")
 print(f"  Background file   : {background_file}")
 print(f"  Max events        : {max_events if max_events is not None else 'all'}")
 print(f"  Balance classes   : {BALANCE_CLASSES}")
+print(f"  Balance validation: {BALANCE_VAL_CLASSES}")
 print(f"  Event order       : {EVENT_ORDER}  (shuffle seed={DATA_SHUFFLE_SEED})")
 print(f"  Reshuffle passes  : {RESHUFFLE_BETWEEN_PASSES}  (seed={PASS_RESHUFFLE_SEED})")
 print(f"  N_iter            : {n_iter}")
@@ -734,7 +736,34 @@ val_weights = np.array(vs_w + vb_w, dtype=float)
 val_labels  = np.array(vs_l + vb_l, dtype=float)
 
 rng_val = np.random.default_rng(seed=DATA_SHUFFLE_SEED)
-val_idx = rng_val.permutation(len(val_events))[:N_VAL]
+
+if BALANCE_VAL_CLASSES:
+    if N_VAL % 2 != 0:
+        raise ValueError(
+            "Balanced validation requires an even N_VAL."
+        )
+
+    n_each_val = N_VAL // 2
+
+    sig_idx = np.flatnonzero(val_labels == 1)
+    bkg_idx = np.flatnonzero(val_labels == 0)
+
+    if len(sig_idx) < n_each_val or len(bkg_idx) < n_each_val:
+        raise ValueError(
+            f"Not enough validation events: need {n_each_val} "
+            f"per class, available {len(sig_idx)} signal "
+            f"and {len(bkg_idx)} background."
+        )
+
+    selected_sig = rng_val.permutation(sig_idx)[:n_each_val]
+    selected_bkg = rng_val.permutation(bkg_idx)[:n_each_val]
+
+    val_idx = np.concatenate([selected_sig, selected_bkg])
+    val_idx = rng_val.permutation(val_idx)
+
+else:
+    val_idx = rng_val.permutation(len(val_events))[:N_VAL]
+
 val_events  = val_events[val_idx]
 val_weights = val_weights[val_idx]
 val_labels  = val_labels[val_idx]
@@ -1293,6 +1322,7 @@ results = {
         "n_events_used"           : N_EVENTS,
         "max_events_limit"        : max_events,
         "BALANCE_CLASSES"         : BALANCE_CLASSES,
+        "BALANCE_VAL_CLASSES": BALANCE_VAL_CLASSES,
         "FEATURE_SCALING"         : FEATURE_SCALING,
         "feature_mean"            : FEAT_MEAN.tolist() if FEAT_MEAN is not None else None,
         "feature_std"             : FEAT_STD.tolist() if FEAT_STD is not None else None,
