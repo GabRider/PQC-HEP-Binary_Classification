@@ -334,7 +334,7 @@ if args.backend is not None:
     SIM_BACKEND = args.backend
 if args.theta_seed is not None:
     THETA_INIT_SEED = args.theta_seed
-if SIM_BACKEND == "hybrid" and args.run_tag is None:
+if SIM_BACKEND == "hybrid":
     if RUN_TAG is None:
         RUN_TAG = "hybrid"
     else:

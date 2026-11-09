@@ -57,3 +57,9 @@ Thumbs.db
 logs_scan/
 phase*/logs/
 !phase*/results/*iter_batch*/
+
+
+
+# Grid alpha x b (phase 0): keep the run folders, but not the validation predictions
+!phase0/results/grid/*iter_batch*/
+phase0/results/grid/*/val_predictions.csv
