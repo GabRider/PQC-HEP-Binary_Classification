@@ -36,6 +36,7 @@ from sklearn.metrics import roc_curve, roc_auc_score
 # DATA LOADING
 # ============================================================
 
+
 def _read_predictions(path):
     """Read labels, weights and classifier probabilities."""
 
@@ -46,15 +47,29 @@ def _read_predictions(path):
         raise ValueError(f"Empty predictions file: {path}")
 
     labels = np.array(
-        [int(row["label"]) for row in rows], dtype=int
-    )
-
-    weights = np.array(
-        [float(row["weight"]) for row in rows], dtype=float
+        [int(row["label"]) for row in rows],
+        dtype=int
     )
 
     probabilities = np.array(
-        [float(row["p"]) for row in rows], dtype=float
+        [float(row["p"]) for row in rows],
+        dtype=float
+    )
+
+    # Training/validation use "weight".
+    # Testing may use "physics_weight".
+    if "weight" in rows[0]:
+        weight_column = "weight"
+    elif "physics_weight" in rows[0]:
+        weight_column = "physics_weight"
+    else:
+        raise ValueError(
+            f"Missing weight column in {path}"
+        )
+
+    weights = np.array(
+        [float(row[weight_column]) for row in rows],
+        dtype=float
     )
 
     if not np.all(np.isfinite(weights)):
@@ -81,6 +96,7 @@ def _read_predictions(path):
             )
 
     return labels, weights, probabilities
+
 
 
 def _read_history(path):
@@ -220,6 +236,165 @@ def plot_roc_curves(
         f"validation={val_auc:.6f}"
     )
 
+
+# ============================================================
+# 1B. WEIGHTED ROC: TRAINING, VALIDATION AND TESTING
+# ============================================================
+
+def plot_roc_with_testing(
+    train_labels,
+    train_weights,
+    train_probabilities,
+    val_labels,
+    val_weights,
+    val_probabilities,
+    test_labels,
+    test_weights,
+    test_probabilities,
+    plots_dir
+):
+    """Compare weighted ROC curves for all three datasets."""
+
+    datasets = [
+        (
+            "Training",
+            train_labels,
+            train_weights,
+            train_probabilities,
+            "tab:blue"
+        ),
+        (
+            "Validation",
+            val_labels,
+            val_weights,
+            val_probabilities,
+            "tab:orange"
+        ),
+        (
+            "Testing",
+            test_labels,
+            test_weights,
+            test_probabilities,
+            "tab:green"
+        )
+    ]
+
+    fig, ax = plt.subplots(figsize=(7.2, 5.5))
+
+    for name, labels, weights, probs, color in datasets:
+
+        fpr, tpr, _ = roc_curve(
+            labels,
+            probs,
+            sample_weight=weights
+        )
+
+        auc = roc_auc_score(
+            labels,
+            probs,
+            sample_weight=weights
+        )
+
+        ax.plot(
+            fpr,
+            tpr,
+            color=color,
+            linewidth=2,
+            label=f"{name} (AUC = {auc:.4f})"
+        )
+
+        print(f"  {name} weighted AUC: {auc:.6f}")
+
+    ax.plot(
+        [0, 1],
+        [0, 1],
+        linestyle="--",
+        color="gray",
+        linewidth=1,
+        label="Random classifier"
+    )
+
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+
+    ax.set_title(
+        "Weighted ROC Curves: Training vs Validation vs Testing"
+    )
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.02)
+
+    ax.legend(loc="lower right")
+    ax.grid(alpha=0.2)
+
+    _save(
+        fig,
+        plots_dir,
+        "ROC_train_vs_val_vs_test"
+    )
+
+
+# ============================================================
+# 1C. WEIGHTED ROC: TESTING ONLY
+# ============================================================
+
+def plot_roc_testing(
+    test_labels,
+    test_weights,
+    test_probabilities,
+    plots_dir
+):
+    """Plot weighted ROC curve for the independent testing set."""
+
+    fpr, tpr, _ = roc_curve(
+        test_labels,
+        test_probabilities,
+        sample_weight=test_weights
+    )
+
+    test_auc = roc_auc_score(
+        test_labels,
+        test_probabilities,
+        sample_weight=test_weights
+    )
+
+    fig, ax = plt.subplots(figsize=(7.2, 5.5))
+
+    ax.plot(
+        fpr,
+        tpr,
+        color="tab:green",
+        linewidth=2,
+        label=f"Testing (AUC = {test_auc:.4f})"
+    )
+
+    ax.plot(
+        [0, 1],
+        [0, 1],
+        linestyle="--",
+        color="gray",
+        linewidth=1,
+        label="Random classifier"
+    )
+
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+
+    ax.set_title("Weighted ROC Curve: Testing")
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.02)
+
+    ax.legend(loc="lower right")
+    ax.grid(alpha=0.2)
+
+    _save(
+        fig,
+        plots_dir,
+        "ROC_test"
+    )
+
+    print(f"  Testing weighted AUC: {test_auc:.6f}")
 
 # ============================================================
 # 2. OVERTRAINING CHECK
@@ -363,22 +538,30 @@ def plot_losses(
     _save(fig, plots_dir, "loss_train_vs_val")
 
 
+
 # ============================================================
 # MAIN FUNCTION
 # ============================================================
 
-def generate_all_plots(output_dir):
+def generate_all_plots(output_dir, include_testing=True):
     """
-    Generate all diagnostic plots from a training output folder.
+    Generate diagnostic plots from a training output folder.
 
-    This function is called automatically by PQC_phase0.py
-    when GENERATE_PLOTS=True.
+    Always generates:
+        - Training vs validation ROC
+        - Overtraining check
+        - Training vs validation loss
+
+    If include_testing=True and test_predictions.csv exists:
+        - Training vs validation vs testing ROC
+        - Testing ROC
     """
 
     output_dir = Path(output_dir)
 
     train_path = output_dir / "train_predictions.csv"
     val_path = output_dir / "val_predictions.csv"
+    test_path = output_dir / "test_predictions.csv"
     history_path = output_dir / "history.csv"
 
     for path in (train_path, val_path, history_path):
@@ -390,7 +573,7 @@ def generate_all_plots(output_dir):
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    # Read final predictions
+    # Read training and validation predictions
 
     train_labels, train_weights, train_probs = (
         _read_predictions(train_path)
@@ -406,7 +589,7 @@ def generate_all_plots(output_dir):
         _read_history(history_path)
     )
 
-    # Generate ROC curves
+    # 1. Training vs validation ROC
 
     plot_roc_curves(
         train_labels,
@@ -418,7 +601,7 @@ def generate_all_plots(output_dir):
         plots_dir
     )
 
-    # Generate overtraining histogram
+    # 2. Overtraining check
 
     plot_overtraining(
         train_labels,
@@ -430,7 +613,7 @@ def generate_all_plots(output_dir):
         plots_dir
     )
 
-    # Generate loss curves
+    # 3. Training and validation loss
 
     plot_losses(
         epochs,
@@ -439,9 +622,50 @@ def generate_all_plots(output_dir):
         plots_dir
     )
 
+    # 4. Additional testing plots
+
+    if include_testing and test_path.is_file():
+
+        print("\n  Generating testing ROC plots...")
+
+        test_labels, test_weights, test_probs = (
+            _read_predictions(test_path)
+        )
+
+        # Training vs validation vs testing ROC
+
+        plot_roc_with_testing(
+            train_labels,
+            train_weights,
+            train_probs,
+            val_labels,
+            val_weights,
+            val_probs,
+            test_labels,
+            test_weights,
+            test_probs,
+            plots_dir
+        )
+
+        # Testing-only ROC
+
+        plot_roc_testing(
+            test_labels,
+            test_weights,
+            test_probs,
+            plots_dir
+        )
+
+    elif include_testing:
+        print(
+            "  No test_predictions.csv found. "
+            "Skipping testing ROC plots."
+        )
+
     print("  All diagnostic plots generated successfully.")
 
     return plots_dir
+
 
 
 # ============================================================

@@ -147,6 +147,18 @@ VAL_SIG_FILE    = "val_sig.csv"                 # validation signal CSV (relativ
 VAL_BKG_FILE    = "val_bkg.csv"                 # validation background CSV
 N_VAL           = 2000                          # number of validation events (random subset)
 
+# Independent testing dataset
+TEST_SIG_FILE = "test_sig.csv"
+TEST_BKG_FILE = "test_bkg.csv"
+
+# None = use all testing events
+N_TEST = 5000
+
+# Evaluation options
+RUN_TESTING = True
+GENERATE_TEST_PLOTS = True
+GENERATE_FOM = False
+
 # Event ordering.
 # Controls the order and randomisation of training events.
 # "random"           : signal and background events interleaved randomly (recommended)
@@ -610,34 +622,60 @@ print(f"{'='*62}\n")
 
 def load_events(filepath, label):
     """
-    Read one CSV file and return (features, weights, labels).
-    Cols 0-11: float features. Col 12: float weight. Col 13: ignored.
-    Malformed lines are skipped silently.
+    Read one CSV file.
+    Returns:
+        features, weights, labels, process_names
     """
     if not os.path.isfile(filepath):
-        print(f"Error: file '{filepath}' not found.")
-        sys.exit(1)
-    feats, wts = [], []
+        raise FileNotFoundError(filepath)
+
+    feats = []
+    wts = []
+    process_names = []
     skipped = 0
+
     with open(filepath) as f:
         for line in f:
             line = line.strip()
+
             if not line:
                 continue
-            cols = line.split(',')
+
+            cols = line.split(",")
+
             try:
-                feats.append([float(x) for x in cols[:12]])
-                wts.append(float(cols[12]))
+                if len(cols) < 14:
+                    raise ValueError("Missing process column")
+
+                features = [float(x) for x in cols[:12]]
+                weight = float(cols[12])
+                process = cols[13].strip()
+
+                if not process:
+                    raise ValueError("Empty process name")
+
             except (IndexError, ValueError):
                 skipped += 1
+                continue
+
+            feats.append(features)
+            wts.append(weight)
+            process_names.append(process)
+
     if skipped:
         print(f"  Skipped {skipped} non-event lines in '{filepath}'")
-    return feats, wts, [label] * len(feats)
+
+    return feats, wts, [label] * len(feats), process_names
 
 
 print("Loading data...")
-s_feats, s_weights, s_labels = load_events(signal_file,     1)
-b_feats, b_weights, b_labels = load_events(background_file, 0)
+s_feats, s_weights, s_labels, s_processes = load_events(
+    signal_file, 1
+)
+
+b_feats, b_weights, b_labels, b_processes = load_events(
+    background_file, 0
+)
 s_weights = np.array(s_weights, dtype=float)
 b_weights = np.array(b_weights, dtype=float)
 if s_weights.sum() == 0:
@@ -652,6 +690,10 @@ print(f"  Loaded : {len(s_feats) + len(b_feats)} events ({len(s_feats)} signal, 
 all_feats   = np.array(s_feats + b_feats)
 all_weights = np.concatenate([s_weights, b_weights])
 all_labels  = np.array(s_labels + b_labels, dtype=float)
+all_processes = np.asarray(
+    s_processes + b_processes,
+    dtype=str
+)
 rng         = np.random.default_rng(seed=DATA_SHUFFLE_SEED)
 
 if BALANCE_CLASSES and max_events is not None:
@@ -665,10 +707,12 @@ if BALANCE_CLASSES and max_events is not None:
         sys.exit(1)
     s_idx   = rng.permutation(len(s_feats))[:n_each]
     b_idx   = rng.permutation(len(b_feats))[:n_each]
+    sel_proc = np.concatenate([np.asarray(s_processes)[s_idx],  np.asarray(b_processes)[b_idx]])
     sel_f   = np.concatenate([np.array(s_feats)[s_idx],               np.array(b_feats)[b_idx]])
     sel_w   = np.concatenate([s_weights[s_idx],                       b_weights[b_idx]])
     sel_l   = np.concatenate([np.array(s_labels, dtype=float)[s_idx], np.array(b_labels, dtype=float)[b_idx]])
     order   = rng.permutation(len(sel_f))
+    processes = sel_proc[order]
     events  = sel_f[order]
     weights = sel_w[order]
     labels  = sel_l[order]
@@ -677,10 +721,12 @@ else:
         print(f"Error: MAX_EVENTS={max_events} exceeds {len(all_feats)} available events.")
         sys.exit(1)
     order   = rng.permutation(len(all_feats))
+    processes = all_processes[order]
     events  = all_feats[order]
     weights = all_weights[order]
     labels  = all_labels[order]
     if max_events is not None:
+        processes = processes[:max_events]
         events  = events[:max_events]
         weights = weights[:max_events]
         labels  = labels[:max_events]
@@ -688,17 +734,23 @@ else:
 if EVENT_ORDER == "signal_first":
     sig_m = labels == 1
     bkg_m = labels == 0
+    processes = np.concatenate([processes[sig_m],processes[bkg_m]])
     events  = np.concatenate([events[sig_m],  events[bkg_m]])
     weights = np.concatenate([weights[sig_m], weights[bkg_m]])
     labels  = np.concatenate([labels[sig_m],  labels[bkg_m]])
 elif EVENT_ORDER == "background_first":
     sig_m = labels == 1
     bkg_m = labels == 0
+    processes = np.concatenate([processes[bkg_m],processes[sig_m]])
     events  = np.concatenate([events[bkg_m],  events[sig_m]])
     weights = np.concatenate([weights[bkg_m], weights[sig_m]])
     labels  = np.concatenate([labels[bkg_m],  labels[sig_m]])
 
 N_EVENTS = len(events)
+
+# Preserve original weights before class balancing.
+# Used later for physics yields and FOM.
+train_physics_weights = weights.copy()
 
 # Normalise weights: sum(w_S) = sum(w_B) = N(background events in training set).
 # Done after selection so the balance is correct for the events actually trained on.
@@ -731,11 +783,15 @@ if FEATURE_SCALING == "zscore":
 # --- Validation set (Phase 0) -------------------------------------------------
 # Random subset of N_VAL events from the validation files. Never used for gradients;
 # only to monitor loss and AUC. Standardised with the TRAINING mean/std.
-vs_feats, vs_w, vs_l = load_events(os.path.join(effective_data_folder, VAL_SIG_FILE), 1)
-vb_feats, vb_w, vb_l = load_events(os.path.join(effective_data_folder, VAL_BKG_FILE), 0)
+vs_feats, vs_w, vs_l, vs_processes = load_events(
+    os.path.join(effective_data_folder, VAL_SIG_FILE), 1)
+
+vb_feats, vb_w, vb_l, vb_processes = load_events(
+    os.path.join(effective_data_folder, VAL_BKG_FILE), 0)
 val_events  = np.array(vs_feats + vb_feats)
 val_weights = np.array(vs_w + vb_w, dtype=float)
 val_labels  = np.array(vs_l + vb_l, dtype=float)
+val_processes = np.asarray(vs_processes + vb_processes, dtype=str)
 
 rng_val = np.random.default_rng(seed=DATA_SHUFFLE_SEED)
 
@@ -766,9 +822,12 @@ if BALANCE_VAL_CLASSES:
 else:
     val_idx = rng_val.permutation(len(val_events))[:N_VAL]
 
+val_processes = val_processes[val_idx]
 val_events  = val_events[val_idx]
 val_weights = val_weights[val_idx]
 val_labels  = val_labels[val_idx]
+# Preserve original validation weights before class balancing.
+val_physics_weights = val_weights.copy()
 
 # Same weight normalisation as the training set: sum(w_S) = sum(w_B) = N(background).
 _vs = val_labels == 1
@@ -780,6 +839,67 @@ if FEATURE_SCALING == "zscore":
     val_events = (val_events - FEAT_MEAN) / FEAT_STD
 
 print(f"  Validation : {N_VAL} events ({int(_vs.sum())} signal, {int(_vb.sum())} background)")
+
+# --- Independent testing set ----------------------------------------
+
+if RUN_TESTING:
+    ts_feats, ts_w, ts_l, ts_processes = load_events(
+        os.path.join(effective_data_folder, TEST_SIG_FILE), 1
+    )
+
+    tb_feats, tb_w, tb_l, tb_processes = load_events(
+        os.path.join(effective_data_folder, TEST_BKG_FILE), 0
+    )
+
+    test_events = np.asarray(
+        ts_feats + tb_feats,
+        dtype=float
+    )
+
+    test_physics_weights = np.asarray(
+        ts_w + tb_w,
+        dtype=float
+    )
+
+    test_labels = np.asarray(
+        ts_l + tb_l,
+        dtype=int
+    )
+
+    test_processes = np.asarray(
+        ts_processes + tb_processes,
+        dtype=str
+    )
+
+    if N_TEST is not None:
+        if not (1 <= N_TEST <= len(test_events)):
+            raise ValueError("Invalid N_TEST")
+
+        rng_test = np.random.default_rng(
+            DATA_SHUFFLE_SEED + 1000
+            if DATA_SHUFFLE_SEED is not None else None
+        )
+
+        test_idx = rng_test.permutation(
+            len(test_events)
+        )[:N_TEST]
+
+        test_events = test_events[test_idx]
+        test_physics_weights = test_physics_weights[test_idx]
+        test_labels = test_labels[test_idx]
+        test_processes = test_processes[test_idx]
+
+    # Apply the SAME scaling learned from training.
+    if FEATURE_SCALING == "zscore":
+        test_events = (
+            test_events - FEAT_MEAN
+        ) / FEAT_STD
+
+    print(
+        f"  Testing: {len(test_events)} events "
+        f"({np.sum(test_labels == 1)} signal, "
+        f"{np.sum(test_labels == 0)} background)"
+    )
 
 
 # Resolve BATCH_SIZE fraction to an integer now that N_EVENTS is known.
@@ -1121,6 +1241,11 @@ if SIM_BACKEND == "hybrid":
     print(f"Hybrid backend: encoding {N_EVENTS} training and {len(val_events)} validation events...")
     all_circuits = np.array([preprocess_event(x_raw) for x_raw in events])
     val_circuits = np.array([preprocess_event(x_raw) for x_raw in val_events])
+    if RUN_TESTING:
+        test_circuits = np.asarray([
+            preprocess_event(x_raw)
+            for x_raw in test_events
+        ])
     print()
 else:
     print(f"Pre-building and transpiling circuits ({N_EVENTS} events)...")
@@ -1132,6 +1257,27 @@ else:
     print()
 
     val_circuits = []
+    if RUN_TESTING:
+        test_circuits = []
+
+        for x_raw in tqdm(
+            test_events,
+            desc="Building test",
+            unit="event"
+        ):
+            amplitudes = preprocess_event(x_raw)
+
+            theta_params = ParameterVector(
+                "theta", N_PARAMS
+            )
+
+            test_circuits.append((
+                build_event_circuit(
+                    amplitudes,
+                    theta_params
+                ),
+                theta_params
+            ))
     for x_raw in tqdm(val_events, desc="Building val", unit="event", leave=True):
         amplitudes = preprocess_event(x_raw)
         theta_params = ParameterVector('theta', N_PARAMS)
@@ -1313,6 +1459,42 @@ pass_bar.close()
 theta_final   = theta_current.tolist()
 gate_sequence = record_final_circuit(theta_final)
 theta_labels  = generate_theta_labels(gate_sequence)
+# --- Final testing evaluation ---------------------------------------
+
+if RUN_TESTING:
+    print("\nEvaluating independent testing sample...")
+
+    test_predictions = np.empty(
+        len(test_circuits),
+        dtype=float
+    )
+
+    theta_eval = np.asarray(
+        theta_final,
+        dtype=float
+    )
+
+    for start in range(0, len(test_circuits), 500):
+        end = min(start + 500, len(test_circuits))
+
+        test_predictions[start:end] = _run_circuits_batch(
+            test_circuits[start:end],
+            theta_eval
+        )
+
+    test_auc = roc_auc_score(
+        test_labels,
+        test_predictions,
+        sample_weight=test_physics_weights
+    )
+
+    test_auc_unweighted = roc_auc_score(
+        test_labels,
+        test_predictions
+    )
+
+    print(f"  Testing weighted AUC   : {test_auc:.6f}")
+    print(f"  Testing unweighted AUC : {test_auc_unweighted:.6f}")
 
 
 # =============================================================================
@@ -1428,6 +1610,27 @@ if GENERATE_PLOTS:
             f.write(f"{int(z)},{w:.16g},{p:.16g}\n")
 
     print(f"  Train preds  : {train_pred_path}")
+
+if RUN_TESTING:
+    test_pred_path = os.path.join(
+        output_dir,
+        "test_predictions.csv"
+    )
+
+    with open(test_pred_path, "w") as f:
+        f.write("label,physics_weight,process,p\n")
+
+        for z, w, proc, p in zip(
+            test_labels,
+            test_physics_weights,
+            test_processes,
+            test_predictions
+        ):
+            f.write(
+                f"{int(z)},{w:.16g},{proc},{p:.16g}\n"
+            )
+
+    print(f"  Test preds: {test_pred_path}")
 
 
 # --- Standalone classifier script --------------------------------------------
@@ -1605,7 +1808,21 @@ if GENERATE_PLOTS:
     try:
         from plot_training_results import generate_all_plots
 
-        plots_dir = generate_all_plots(output_dir)
+        # Plot generation behavior:
+        #
+        # GENERATE_PLOTS = True,  RUN_TESTING = True
+        #   -> Generate 5 plots if test_predictions.csv exists.
+        #
+        # GENERATE_PLOTS = True,  RUN_TESTING = False
+        #   -> Generate the 3 original plots (training and validation).
+        #
+        # GENERATE_PLOTS = False, RUN_TESTING = True
+        #   -> Run testing without generating plots.
+        #
+        # GENERATE_PLOTS = False, RUN_TESTING = False
+        #   -> No plots generated.
+
+        plots_dir = generate_all_plots(output_dir, include_testing=RUN_TESTING)
 
         print(f"  Plots saved to: {plots_dir}")
 
